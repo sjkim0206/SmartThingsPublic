@@ -58,8 +58,8 @@ metadata {
                 attributeState "open", label:'${name}', action:"close", icon:"st.shades.shade-open", backgroundColor:"#79b821", nextState:"closing"
                 attributeState "closed", label:'${name}', action:"open", icon:"st.shades.shade-closed", backgroundColor:"#ffffff", nextState:"opening"
                 attributeState "partially open", label:'Open', action:"close", icon:"st.shades.shade-open", backgroundColor:"#79b821", nextState:"closing"
-                attributeState "opening", label:'${name}', action:"stop", icon:"st.shades.shade-opening", backgroundColor:"#79b821", nextState:"partially open"
-                attributeState "closing", label:'${name}', action:"stop", icon:"st.shades.shade-closing", backgroundColor:"#ffffff", nextState:"partially open"
+                attributeState "opening", label:'${name}', action:"stop", icon:"st.shades.shade-opening", backgroundColor:"#79b821", nextState:"open"
+                attributeState "closing", label:'${name}', action:"stop", icon:"st.shades.shade-closing", backgroundColor:"#ffffff", nextState:"closed"
             }
             tileAttribute ("device.level", key: "SLIDER_CONTROL") {
                 attributeState "level", action:"setLevel"
@@ -81,6 +81,7 @@ metadata {
 
         preferences {
             input "preset", "number", title: "Preset position", description: "Set the window shade preset position", defaultValue: 50, range: "1..100", required: false, displayDuringSetup: false
+            input "invertLevel", "bool", title: "Invert level percentage", description: "Enable if your blind reports 0% as fully open and 100% as fully closed (fixes reversed open/close status)", defaultValue: false, required: false, displayDuringSetup: false
         }
 
         main(["windowShade"])
@@ -139,6 +140,11 @@ private handleLevelReport(physicalgraph.zwave.Command cmd) {
     def shadeValue = null
 
     def level = cmd.value as Integer
+    if (settings.invertLevel == true) {
+        level = 99 - level
+        if (level < 0) level = 0
+        if (level > 99) level = 99
+    }
     if (level >= 99) {
         level = 100
         shadeValue = "open"
@@ -188,20 +194,14 @@ def zwaveEvent(physicalgraph.zwave.Command cmd) {
 def open() {
     levelChangeFollowUp(99)
     log.debug "open()"
-    /*delayBetween([
-            zwave.basicV1.basicSet(value: 0xFF).format(),
-            zwave.switchMultilevelV1.switchMultilevelGet().format()
-    ], 1000)*/
+    sendEvent(name: "windowShade", value: "opening")
     zwave.basicV1.basicSet(value: 99).format()
 }
 
 def close() {
     levelChangeFollowUp(0)
     log.debug "close()"
-    /*delayBetween([
-            zwave.basicV1.basicSet(value: 0x00).format(),
-            zwave.switchMultilevelV1.switchMultilevelGet().format()
-    ], 1000)*/
+    sendEvent(name: "windowShade", value: "closing")
     zwave.basicV1.basicSet(value: 0).format()
 }
 

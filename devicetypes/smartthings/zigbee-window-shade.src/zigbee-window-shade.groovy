@@ -38,6 +38,7 @@ metadata {
 
 	preferences {
 		input "preset", "number", title: "Preset position", description: "Set the window shade preset position", defaultValue: 50, range: "1..100", required: false, displayDuringSetup: false
+		input "invertLevel", "bool", title: "Invert level percentage", description: "Enable if your blind reports 0% as fully open and 100% as fully closed (fixes reversed open/close status)", defaultValue: false, required: false, displayDuringSetup: false
 	}
 
 	tiles(scale: 2) {
@@ -46,8 +47,8 @@ metadata {
 				attributeState "open", label: 'Open', action: "close", icon: "http://www.ezex.co.kr/img/st/window_open.png", backgroundColor: "#00A0DC", nextState: "closing"
 				attributeState "closed", label: 'Closed', action: "open", icon: "http://www.ezex.co.kr/img/st/window_close.png", backgroundColor: "#ffffff", nextState: "opening"
 				attributeState "partially open", label: 'Partially open', action: "close", icon: "http://www.ezex.co.kr/img/st/window_open.png", backgroundColor: "#d45614", nextState: "closing"
-				attributeState "opening", label: 'Opening', action: "pause", icon: "http://www.ezex.co.kr/img/st/window_open.png", backgroundColor: "#00A0DC", nextState: "partially open"
-				attributeState "closing", label: 'Closing', action: "pause", icon: "http://www.ezex.co.kr/img/st/window_close.png", backgroundColor: "#ffffff", nextState: "partially open"
+				attributeState "opening", label: 'Opening', action: "pause", icon: "http://www.ezex.co.kr/img/st/window_open.png", backgroundColor: "#00A0DC", nextState: "open"
+				attributeState "closing", label: 'Closing', action: "pause", icon: "http://www.ezex.co.kr/img/st/window_close.png", backgroundColor: "#ffffff", nextState: "closed"
 			}
 		}
 		standardTile("contPause", "device.switch", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
@@ -154,11 +155,13 @@ def supportsLiftPercentage() {
 
 def close() {
 	log.info "close()"
+	sendEvent(name: "windowShade", value: "closing")
 	zigbee.command(CLUSTER_WINDOW_COVERING, COMMAND_CLOSE)
 }
 
 def open() {
 	log.info "open()"
+	sendEvent(name: "windowShade", value: "opening")
 	zigbee.command(CLUSTER_WINDOW_COVERING, COMMAND_OPEN)
 }
 
@@ -263,7 +266,7 @@ private List readDeviceBindingTable() {
 }
 
 def shouldInvertLiftPercentage() {
-	return isSomfy()
+	return isSomfy() || (settings.invertLevel == true)
 }
 
 def isSomfy() {
