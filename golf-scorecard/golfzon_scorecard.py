@@ -361,21 +361,31 @@ footer { text-align:center; padding:10px; font-size:.72rem;
 # ══════════════════════════════════════════════
 
 def save_pdf(html_path, pdf_path):
-    """weasyprint으로 PDF 변환. 없으면 안내만 출력."""
+    """HTML을 PDF로 변환. 실패 시 HTML만 저장하고 안내 출력."""
+    # 방법 1: weasyprint
     try:
         from weasyprint import HTML
         HTML(filename=str(html_path)).write_pdf(str(pdf_path))
         print(f"[✓] PDF 저장: {pdf_path}")
         return True
-    except ImportError:
-        print("[!] weasyprint 미설치 → PDF 생성 불가")
-        print("    설치: pip install weasyprint")
-        print(f"    HTML 파일은 저장됨: {html_path}")
-        return False
-    except Exception as e:
-        print(f"[!] PDF 변환 오류: {e}")
-        print(f"    HTML 파일은 저장됨: {html_path}")
-        return False
+    except Exception:
+        pass
+
+    # 방법 2: pdfkit (wkhtmltopdf 필요)
+    try:
+        import pdfkit
+        pdfkit.from_file(str(html_path), str(pdf_path))
+        print(f"[✓] PDF 저장: {pdf_path}")
+        return True
+    except Exception:
+        pass
+
+    # 방법 3: HTML만 저장하고 안내
+    print(f"[✓] HTML 저장 완료: {html_path}")
+    print("    ※ PDF 변환은 브라우저에서 직접 하세요:")
+    print(f"       termux-open \"{html_path}\"")
+    print("       브라우저 메뉴 → 공유 → 인쇄 → PDF로 저장")
+    return False
 
 
 # ══════════════════════════════════════════════
