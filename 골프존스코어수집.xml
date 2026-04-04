@@ -15,9 +15,8 @@
   │  • AutoInput 플러그인 (Accessibility Service 활성화 필수)               │
   │  • Termux + Python3                                                     │
   │    pkg install python                                                   │
-  │  • 스크립트 복사:                                                        │
-  │    golfzon_scorecard.py  → /sdcard/golf_scripts/                        │
-  │    golfzon_tasker_parse.py → /sdcard/golf_scripts/                      │
+  │  • Termux에서 git pull 후 바로 사용 가능:                               │
+  │    cd ~/SmartThingsPublic && git pull                                   │
   │                                                                         │
   │  [가져오기 방법]                                                         │
   │  1. 이 파일을 /sdcard/Download/ 에 복사                                 │
@@ -150,7 +149,7 @@
          ════════════════════════════════════════ -->
     <Action sr="act10" ve="7">
       <code>664</code>
-      <Str sr="arg0" ve="3">python3 /sdcard/golf_scripts/golfzon_tasker_parse.py --list /sdcard/Pictures/golf_scores/ranking.xml</Str>
+      <Str sr="arg0" ve="3">python3 /data/data/com.termux/files/home/SmartThingsPublic/golfzon_tasker_parse.py --list /sdcard/Pictures/golf_scores/ranking.xml</Str>
       <Str sr="arg1" ve="3">%PLAYERS_JSON</Str>
       <Int sr="arg2" val="30"/>
       <Int sr="arg3" val="0"/>
@@ -255,7 +254,7 @@ setLocal('player_names', d.names.join('|'));</Str>
          ════════════════════════════════════════ -->
     <Action sr="act20" ve="7">
       <code>664</code>
-      <Str sr="arg0" ve="3">python3 /sdcard/golf_scripts/golfzon_tasker_parse.py --generate /sdcard/Pictures/golf_scores/ &amp;&amp; echo "PDF_OK"</Str>
+      <Str sr="arg0" ve="3">python3 /data/data/com.termux/files/home/SmartThingsPublic/golfzon_tasker_parse.py --generate /sdcard/Pictures/golf_scores/ &amp;&amp; echo "PDF_OK"</Str>
       <Str sr="arg1" ve="3">%PDFOUT</Str>
       <Int sr="arg2" val="120"/>
       <Int sr="arg3" val="0"/>
