@@ -1,568 +1,556 @@
 #!/usr/bin/env python3
 """
-골프존 앱 자동 스크래핑 도구 v3
-ADB UI 자동화로 골프존 앱을 직접 조작하여 스코어 데이터를 추출합니다.
+골프존 네트워크플레이 스코어 자동 수집
+uiautomator dump + input tap 방식 (ADB 불필요)
 
-사전 준비:
-  1. Termux에서 ADB 설치: pkg install android-tools
-  2. 폰 설정 → 개발자 옵션 → 무선 디버깅 → 활성화
-  3. 무선 디버깅 화면에서 IP:PORT 확인 후:
-     adb connect <IP>:<PORT>
-  4. 이 스크립트 실행: python golfzon_auto.py
+실행: python3 golfzon_auto.py
 """
 
-import subprocess, time, json, re, sys
+import subprocess, time, sys, re, json
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-# ── 설정 ───────────────────────────────────────
-GOLFZON_PACKAGE = "com.golfzon.android"
-SUNDAYSCREEN_DIR = Path.home() / "storage" / "downloads" / "sundayscreen"
-UI_DUMP_PATH    = "/sdcard/ui_gz.xml"
-SWIPE_SPEED     = 600   # ms
+# ── 설정 ────────────────────────────────────────
+GOLFZON_PKG  = "com.golfzon.android"
+GOLFZON_ACT  = "com.golfzon.android.main.activity.MainActivity"
+SCORES_DIR   = Path("/sdcard/Pictures/golf_scores")
+OUTPUT_DIR   = Path.home() / "storage" / "downloads" / "sundayscreen"
+TMP_DUMP     = str(SCORES_DIR / "tmp.xml")
 
 
 # ══════════════════════════════════════════════
-# ADB 래퍼
+# Shell 래퍼 (ADB 없이 직접 실행)
 # ══════════════════════════════════════════════
-class ADB:
-    def shell(self, *args, timeout=20):
-        try:
-            r = subprocess.run(["adb", "shell", *args],
-                               capture_output=True, text=True, timeout=timeout)
-            return r.stdout.strip()
-        except subprocess.TimeoutExpired:
-            return ""
 
-    def run(self, *args, timeout=10):
-        try:
-            r = subprocess.run(["adb", *args],
-                               capture_output=True, text=True, timeout=timeout)
-            return r.stdout.strip()
-        except subprocess.TimeoutExpired:
-            return ""
+def sh(cmd, timeout=30):
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    return r.stdout.strip()
 
-    def tap(self, x, y, wait=1.0):
-        self.shell("input", "tap", str(int(x)), str(int(y)))
-        time.sleep(wait)
+def tap(x, y, wait=1.2):
+    sh(f"input tap {x} {y}")
+    time.sleep(wait)
 
-    def swipe_up(self, distance=700, speed=None):
-        sp = speed or SWIPE_SPEED
-        h = self._screen_height()
-        mid_x = self._screen_width() // 2
-        y1 = int(h * 0.75)
-        y2 = max(int(h * 0.75) - distance, 100)
-        self.shell("input", "swipe", str(mid_x), str(y1), str(mid_x), str(y2), str(sp))
-        time.sleep(0.8)
+def swipe_up(wait=0.8):
+    sh("input swipe 540 1400 540 700 600")
+    time.sleep(wait)
 
-    def swipe_down(self, distance=400):
-        h = self._screen_height()
-        mid_x = self._screen_width() // 2
-        y1 = int(h * 0.3)
-        y2 = int(h * 0.3) + distance
-        self.shell("input", "swipe", str(mid_x), str(y1), str(mid_x), str(y2), str(SWIPE_SPEED))
-        time.sleep(0.8)
-
-    def back(self):
-        self.shell("input", "keyevent", "4")
-        time.sleep(1.0)
-
-    def dump_ui(self):
-        self.shell("uiautomator", "dump", "--compressed", UI_DUMP_PATH)
-        xml_str = self.shell("cat", UI_DUMP_PATH)
-        if not xml_str or "<hierarchy" not in xml_str:
-            return None
-        try:
-            return ET.fromstring(xml_str)
-        except ET.ParseError:
-            return None
-
-    def _screen_size(self):
-        out = self.shell("wm", "size")
-        m = re.search(r'(\d+)x(\d+)', out)
-        if m:
-            return int(m.group(1)), int(m.group(2))
-        return 1080, 2340
-
-    def _screen_width(self):
-        return self._screen_size()[0]
-
-    def _screen_height(self):
-        return self._screen_size()[1]
-
-    def launch(self, package):
-        self.shell("monkey", "-p", package, "-c",
-                   "android.intent.category.LAUNCHER", "1")
-        time.sleep(3.5)
-
-    def is_connected(self):
-        out = self.run("devices")
-        lines = [l for l in out.splitlines()[1:] if "\tdevice" in l]
-        return len(lines) > 0
-
-
-# ══════════════════════════════════════════════
-# UI 헬퍼
-# ══════════════════════════════════════════════
-class UI:
-    def __init__(self, adb: ADB):
-        self.adb = adb
-
-    def refresh(self):
-        return self.adb.dump_ui()
-
-    # ── 노드 탐색 ──────────────────────────────
-    def find(self, root, text=None, contains=None, res_id=None):
-        if root is None:
-            return None
-        for node in root.iter("node"):
-            if text is not None and node.get("text", "") == text:
-                return node
-            if contains is not None and contains in node.get("text", ""):
-                return node
-            if res_id is not None and res_id in node.get("resource-id", ""):
-                return node
-        return None
-
-    def find_all(self, root, text=None, contains=None):
-        results = []
-        if root is None:
-            return results
-        for node in root.iter("node"):
-            if text is not None and node.get("text", "") == text:
-                results.append(node)
-            elif contains is not None and contains in node.get("text", ""):
-                results.append(node)
-        return results
-
-    def center(self, node):
-        b = node.get("bounds", "[0,0][1,1]")
-        nums = list(map(int, re.findall(r"\d+", b)))
-        return (nums[0] + nums[2]) // 2, (nums[1] + nums[3]) // 2
-
-    def y_center(self, node):
-        return self.center(node)[1]
-
-    # ── 탭 (텍스트로) ──────────────────────────
-    def tap_text(self, text, exact=True, wait=1.2):
-        root = self.refresh()
-        node = self.find(root, text=text if exact else None,
-                         contains=text if not exact else None)
-        if node:
-            x, y = self.center(node)
-            self.adb.tap(x, y, wait)
-            return True
-        return False
-
-    # ── 대기 ──────────────────────────────────
-    def wait(self, text, timeout=20, contains=False):
-        for _ in range(timeout * 2):
-            root = self.refresh()
-            node = self.find(root, text=text if not contains else None,
-                             contains=text if contains else None)
-            if node:
-                return root
-            time.sleep(0.5)
-        return None
-
-    # ── 텍스트 전체 목록 ──────────────────────
-    def all_texts(self, root):
-        return [n.get("text", "").strip()
-                for n in root.iter("node") if n.get("text", "").strip()]
-
-    # ── 같은 행(y좌표 인접)의 텍스트 ─────────
-    def same_row_texts(self, root, y_ref, tolerance=45):
-        texts = []
-        for node in root.iter("node"):
-            b = node.get("bounds", "")
-            nums = list(map(int, re.findall(r"\d+", b)))
-            if nums:
-                ny = (nums[1] + nums[3]) // 2
-                if abs(ny - y_ref) < tolerance:
-                    t = node.get("text", "").strip()
-                    if t:
-                        texts.append((nums[0], t))  # (x좌표, 텍스트)
-        texts.sort(key=lambda x: x[0])
-        return [t for _, t in texts]
-
-
-# ══════════════════════════════════════════════
-# 골프존 스크래퍼
-# ══════════════════════════════════════════════
-class GolfzonScraper:
-    SCORE_RE = re.compile(r"^([+-]\d+|E|\+0)$")
-    RANK_RE  = re.compile(r"^\d{1,2}$")
-    HOLE_RE  = re.compile(r"^\d{1,2}$")
-
-    def __init__(self):
-        self.adb  = ADB()
-        self.ui   = UI(self.adb)
-        self.today      = datetime.now().strftime("%y.%m.%d")   # 26.03.29
-        self.today_full = datetime.now().strftime("%Y.%m.%d")   # 2026.03.29
-
-    # ── 0. ADB 연결 확인 ──────────────────────
-    def check_adb(self):
-        if not self.adb.is_connected():
-            print("\n[오류] ADB 기기가 연결되지 않았습니다.")
-            print("  Termux에서 아래 명령을 실행하세요:\n")
-            print("  1) pkg install android-tools")
-            print("  2) 폰 설정 → 개발자 옵션 → 무선 디버깅 → ON")
-            print("  3) 무선 디버깅 탭 → IP주소 및 포트 확인")
-            print("  4) adb connect <IP>:<PORT>")
-            print("  5) 다시 이 스크립트 실행\n")
-            sys.exit(1)
-        print("[✓] ADB 연결 확인")
-
-    # ── 1. 골프존 앱 실행 ─────────────────────
-    def launch(self):
-        print("[1/6] 골프존 앱 실행 중...")
-        self.adb.launch(GOLFZON_PACKAGE)
-        root = self.ui.wait("스크린", timeout=25)
-        if not root:
-            raise RuntimeError("골프존 홈 화면 로딩 실패")
-        print("      ✓ 완료")
-
-    # ── 2. 스크린 탭 → 스코어카드 ────────────
-    def go_scorecard(self):
-        print("[2/6] 스코어카드로 이동...")
-
-        # 스크린 탭 클릭
-        if not self.ui.tap_text("스크린"):
-            raise RuntimeError("'스크린' 탭을 찾을 수 없음")
-        time.sleep(1.5)
-
-        # 스코어카드 아이콘 클릭
-        if not self.ui.tap_text("스코어카드"):
-            raise RuntimeError("'스코어카드' 버튼을 찾을 수 없음")
-        time.sleep(2.0)
-        print("      ✓ 완료")
-
-    # ── 3. 오늘 날짜 네트워크플레이 게임 선택 ─
-    def select_today_game(self):
-        print(f"[3/6] 오늘 게임 탐색 ({self.today_full} 네트워크플레이)...")
-
-        for scroll in range(8):
-            root = self.ui.refresh()
-            if root is None:
-                time.sleep(1)
-                continue
-
-            # 날짜 텍스트를 포함하는 노드 찾기
-            date_nodes = self.ui.find_all(root, contains=self.today)
-            for dnode in date_nodes:
-                dy = self.ui.y_center(dnode)
-                row_texts = self.ui.same_row_texts(root, dy, tolerance=60)
-                if "네트워크플레이" in row_texts:
-                    x, y = self.ui.center(dnode)
-                    # 행 전체 탭 (코스명이 탭 대상)
-                    self.adb.tap(x, y, wait=2.0)
-                    print("      ✓ 오늘 게임 선택")
-                    return
-
-            self.adb.swipe_up()
-
-        raise RuntimeError(f"오늘({self.today_full}) 네트워크플레이 게임을 찾을 수 없음")
-
-    # ── 4. 네트워크플레이 결과 화면으로 이동 ──
-    def go_network_result(self):
-        print("[4/6] 네트워크플레이 결과 화면으로 이동...")
-        # 스코어카드 상세 → 하단에 "네트워크플레이 >" 링크 있음
-        for _ in range(6):
-            if self.ui.tap_text("네트워크플레이 >", wait=2.0):
-                print("      ✓ 완료")
-                return
-            if self.ui.tap_text("네트워크플레이", exact=False, wait=2.0):
-                print("      ✓ 완료")
-                return
-            self.adb.swipe_up(distance=500)
-        raise RuntimeError("'네트워크플레이' 링크를 찾을 수 없음")
-
-    # ── 5. 참가자 목록 + 홀별 점수 수집 ───────
-    def collect_all_scores(self):
-        print("[5/6] 참가자 목록 및 홀별 점수 수집 중...")
-
-        # 5-a. 플레이어 목록 수집 (스크롤하면서 전원)
-        players_basic = self._collect_player_list()
-        print(f"      → {len(players_basic)}명 확인")
-
-        # 5-b. 각 플레이어 홀별 점수 수집
-        players_full = []
-        for i, p in enumerate(players_basic):
-            print(f"      → [{i+1}/{len(players_basic)}] {p['name']} 홀별 점수 수집...")
-            scores = self._collect_hole_scores(p['name'], p['total_relative'])
-            p['scores'] = scores
-            players_full.append(p)
-
-        return players_full
-
-    # ── 5-a. 플레이어 목록 수집 ───────────────
-    def _collect_player_list(self):
-        """랭킹 화면 스크롤하며 선수명+총점 수집"""
-        players = []
-        seen    = set()
-        SKIP    = {"스트로크", "롱기", "니어", "다기록", "신페리오", "홀인원",
-                   "라운드", "참여", "완료", "랭킹기준", "스트로크플레이",
-                   "Par", "Score", "Hole", "Putt", "Sensor", ""}
-
-        # 화면 위로 초기화
-        self.adb.swipe_down()
+def swipe_to_top():
+    for _ in range(3):
+        sh("input swipe 540 700 540 1400 400")
         time.sleep(0.5)
 
-        no_new_count = 0
-        for scroll in range(20):
-            root = self.ui.refresh()
-            if root is None:
-                continue
-
-            # 점수 노드 찾기 (−7, +1, +0, E 등)
-            new_found = False
-            for node in root.iter("node"):
-                score_text = node.get("text", "").strip()
-                if not self.SCORE_RE.match(score_text) and score_text not in ("+0", "E", "0"):
-                    continue
-
-                y_ref = self.ui.y_center(node)
-                row   = self.ui.same_row_texts(root, y_ref, tolerance=50)
-
-                for txt in row:
-                    if (txt not in SKIP and
-                        not self.SCORE_RE.match(txt) and
-                        not self.RANK_RE.match(txt) and
-                        not re.match(r"^\d+명", txt) and
-                        txt not in seen and
-                        len(txt) >= 2):
-
-                        val = 0
-                        if score_text not in ("E", "+0", "0"):
-                            try:
-                                val = int(score_text)
-                            except ValueError:
-                                pass
-
-                        seen.add(txt)
-                        players.append({
-                            "rank": len(players) + 1,
-                            "name": txt,
-                            "total_relative": val
-                        })
-                        new_found = True
-
-            if new_found:
-                no_new_count = 0
-            else:
-                no_new_count += 1
-                if no_new_count >= 3:
-                    break
-
-            self.adb.swipe_up(distance=600)
-
-        # 총점 기준 재정렬
-        players.sort(key=lambda x: x["total_relative"])
-        for i, p in enumerate(players):
-            p["rank"] = i + 1
-
-        return players
-
-    # ── 5-b. 선수 클릭 → 홀별 점수 수집 ──────
-    def _collect_hole_scores(self, name, total_relative):
-        """선수 이름 탭 → 펼쳐진 스코어카드에서 18홀 점수 추출"""
-        # 선수 이름 찾아서 탭
-        for scroll in range(8):
-            root = self.ui.refresh()
-            node = self.ui.find(root, text=name)
-            if node:
-                x, y = self.ui.center(node)
-                self.adb.tap(x, y, wait=1.5)
-                break
-            self.adb.swipe_up(distance=400)
-        else:
-            print(f"        ⚠ {name} 을 화면에서 찾지 못함 — 0점으로 처리")
-            return [0] * 18
-
-        # 스코어카드 행 파싱
-        scores = self._parse_scorecard_rows()
-        if len(scores) == 18:
-            return scores
-
-        # 못 찾으면 총점으로 균등 분배
-        print(f"        ⚠ 홀 데이터 부족({len(scores)}개) — 총점으로 대체")
-        return self._fallback_scores(total_relative)
-
-    # ── 스코어카드 행 파싱 ────────────────────
-    def _parse_scorecard_rows(self):
-        """
-        펼쳐진 스코어카드에서 Score 행의 18개 값 추출
-        골프존 앱 형식: Score | 0 | 0 | -1 | 0 | ... (9홀) / (9홀)
-        """
-        scores = []
-
-        for scroll in range(4):
-            root = self.ui.refresh()
-            if root is None:
-                time.sleep(0.5)
-                continue
-
-            # "Score" 텍스트 노드 찾기
-            score_label_nodes = self.ui.find_all(root, text="Score")
-
-            for slabel in score_label_nodes:
-                sy = self.ui.y_center(slabel)
-                row_pairs = self.ui.same_row_texts(root, sy, tolerance=30)
-
-                # Score 행에서 숫자/상대점수 추출
-                row_scores = []
-                for t in row_pairs:
-                    t = t.strip()
-                    if t == "Score":
-                        continue
-                    # 상대점수 또는 T(합계) 제외
-                    if re.match(r"^-?\d+$", t):
-                        row_scores.append(int(t))
-
-                # 9홀 분량이면 추가
-                if len(row_scores) == 9:
-                    scores.extend(row_scores)
-                elif len(row_scores) == 10:
-                    # 마지막은 합계(T)이므로 제외
-                    scores.extend(row_scores[:9])
-
-            if len(scores) >= 18:
-                return scores[:18]
-
-            # 더 보기 위해 아래로 스크롤
-            self.adb.swipe_up(distance=400)
-
-        return scores[:18] if len(scores) >= 18 else scores
-
-    def _fallback_scores(self, total):
-        """총점으로 18홀 균등 분배 (정확한 홀 데이터 없을 때)"""
-        scores = [0] * 18
-        remaining = total
-        i = 0
-        while remaining != 0 and i < 18:
-            delta = 1 if remaining > 0 else -1
-            scores[i] += delta
-            remaining -= delta
-            i = (i + 1) % 18
-        return scores
-
-    # ── 6. 코스 파(Par) 추출 ──────────────────
-    def _collect_par_list(self, root):
-        """Par 행에서 18홀 파 정보 추출"""
-        par_nodes = self.ui.find_all(root, text="Par")
-        par_list  = []
-        for pnode in par_nodes:
-            py  = self.ui.y_center(pnode)
-            row = self.ui.same_row_texts(root, py, tolerance=30)
-            nums = []
-            for t in row:
-                if re.match(r"^[345]$", t.strip()):
-                    nums.append(int(t.strip()))
-            if len(nums) == 9:
-                par_list.extend(nums)
-            elif len(nums) == 10:
-                par_list.extend(nums[:9])
-            if len(par_list) >= 18:
-                return par_list[:18]
-
-        # 기본값 (찾지 못한 경우)
-        return [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
-
-    # ── 6. 게임 메타 정보 수집 ────────────────
-    def collect_game_meta(self):
-        root = self.ui.refresh()
-        # 코스명, 날짜, 총인원 추출
-        texts = self.ui.all_texts(root)
-
-        course  = "코스 미확인"
-        title   = "네트워크플레이"
-        n_total = 16
-        par_list = [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
-
-        for t in texts:
-            if "CC" in t or "GC" in t or "골프" in t:
-                course = t
-                break
-        for t in texts:
-            m = re.search(r"(\d+)명", t)
-            if m:
-                n_total = int(m.group(1))
-                break
-
-        par_list = self._collect_par_list(root)
-        return course, title, n_total, par_list
-
-    # ── 메인 실행 ──────────────────────────────
-    def run(self):
-        print("\n" + "═"*52)
-        print("  골프존 네트워크플레이 자동 스크래핑")
-        print("═"*52 + "\n")
-
-        self.check_adb()
-        self.launch()
-        self.go_scorecard()
-        self.select_today_game()
-
-        # 게임 메타 (코스명, 파 등)
-        course, title, n_total, par_list = self.collect_game_meta()
-
-        self.go_network_result()
-
-        # 선수 데이터 수집
-        players = self.collect_all_scores()
-
-        print(f"\n[6/6] 스코어카드 생성 중...")
-
-        # JSON 구성
-        game_data = {
-            "game_id":          self.today_full.replace(".", ""),
-            "title":            title,
-            "course":           course,
-            "date":             self.today_full,
-            "total_players":    n_total,
-            "finished_players": len(players),
-            "par_list":         par_list,
-            "players":          players,
-        }
-
-        # JSON 저장
-        SUNDAYSCREEN_DIR.mkdir(parents=True, exist_ok=True)
-        json_path = SUNDAYSCREEN_DIR / f"game_{self.today_full.replace('.','')}.json"
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(game_data, f, ensure_ascii=False, indent=2)
-        print(f"      ✓ JSON 저장: {json_path}")
-
-        # 스코어카드 HTML 생성
-        scorecard_script = Path(__file__).parent / "golfzon_scorecard.py"
-        if scorecard_script.exists():
-            import subprocess
-            result = subprocess.run(
-                ["python3", str(scorecard_script),
-                 "--input", str(json_path), "--no-pdf"],
-                capture_output=True, text=True
-            )
-            print(result.stdout.strip())
-            if result.returncode != 0:
-                print(result.stderr.strip())
-        else:
-            print("      ⚠ golfzon_scorecard.py 를 찾을 수 없어 HTML 생성 건너뜀")
-
-        print(f"\n  완료! 결과 폴더: {SUNDAYSCREEN_DIR}\n")
-        return game_data
+def back(wait=1.2):
+    sh("input keyevent 4")
+    time.sleep(wait)
 
 
 # ══════════════════════════════════════════════
-# 실행
+# UI dump 파싱
 # ══════════════════════════════════════════════
-if __name__ == "__main__":
-    scraper = GolfzonScraper()
+
+def dump(path=TMP_DUMP):
+    sh(f"uiautomator dump \"{path}\"")
+    time.sleep(0.5)
     try:
-        scraper.run()
+        return ET.parse(path).getroot()
+    except Exception:
+        return None
+
+def center(node):
+    nums = list(map(int, re.findall(r"\d+", node.get("bounds", "[0,0][1,1]"))))
+    return (nums[0]+nums[2])//2, (nums[1]+nums[3])//2 if len(nums) >= 4 else (0, 0)
+
+def find(root, text=None, has=None, res_id=None):
+    """text: 완전일치 / has: 부분일치 / res_id: resource-id 포함"""
+    if root is None:
+        return None
+    for node in root.iter("node"):
+        if text    is not None and node.get("text","") == text:           return node
+        if has     is not None and has in node.get("text",""):            return node
+        if res_id  is not None and res_id in node.get("resource-id",""): return node
+    return None
+
+def find_all(root, text=None, has=None):
+    out = []
+    if root is None:
+        return out
+    for node in root.iter("node"):
+        if text is not None and node.get("text","") == text:  out.append(node)
+        elif has is not None and has in node.get("text",""):  out.append(node)
+    return out
+
+def row_texts(root, y_ref, tol=45):
+    """y_ref 근처 같은 행의 텍스트를 x 순서대로 반환"""
+    items = []
+    for node in root.iter("node"):
+        nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
+        if len(nums) >= 4:
+            ny = (nums[1]+nums[3])//2
+            if abs(ny-y_ref) < tol:
+                t = node.get("text","").strip()
+                if t:
+                    items.append((nums[0], t))
+    items.sort()
+    return [t for _, t in items]
+
+def tap_node(node, wait=1.2):
+    x, y = center(node)
+    tap(x, y, wait)
+
+def tap_text(root, text=None, has=None, wait=1.2):
+    node = find(root, text=text, has=has)
+    if node:
+        tap_node(node, wait)
+        return True
+    return False
+
+def wait_for(text, timeout=20, has=False):
+    """화면에 해당 텍스트가 나타날 때까지 대기"""
+    for _ in range(timeout * 2):
+        root = dump()
+        node = find(root, has=text if has else None,
+                         text=text if not has else None)
+        if node:
+            return root
+        time.sleep(0.5)
+    return None
+
+
+# ══════════════════════════════════════════════
+# 참가자 파싱 상수
+# ══════════════════════════════════════════════
+
+SCORE_RE = re.compile(r"^([+-]\d+|E|\+0|0)$")
+RANK_RE  = re.compile(r"^\d{1,2}$")
+SKIP     = {"스트로크","롱기","니어","다기록","신페리오","홀인원",
+            "라운드","참여","완료","랭킹기준","스트로크플레이",
+            "Par","Score","Hole","Putt","Sensor","T",""}
+
+def extract_players(root, seen):
+    """dump root에서 신규 참가자 추출"""
+    new_players = []
+    for node in root.iter("node"):
+        s = node.get("text","").strip()
+        if not (SCORE_RE.match(s) or s in ("+0","E","0")):
+            continue
+        y = center(node)[1]
+        for txt in row_texts(root, y, tol=50):
+            if (txt not in SKIP
+                    and not SCORE_RE.match(txt)
+                    and not RANK_RE.match(txt)
+                    and not re.match(r"^\d+명", txt)
+                    and txt not in seen
+                    and len(txt) >= 2):
+                val = 0
+                try:
+                    val = int(s.replace("+",""))
+                except ValueError:
+                    pass
+                seen.add(txt)
+                new_players.append({"name": txt, "total_relative": val})
+                break
+    return new_players
+
+
+# ══════════════════════════════════════════════
+# 스코어카드 파싱
+# ══════════════════════════════════════════════
+
+def parse_scores(root):
+    scores = []
+    for node in root.iter("node"):
+        if node.get("text","").strip() != "Score":
+            continue
+        y = center(node)[1]
+        nums = [int(t) for t in row_texts(root, y, tol=30)
+                if t != "Score" and re.match(r"^-?\d+$", t)]
+        if len(nums) == 9:   scores.extend(nums)
+        elif len(nums) == 10: scores.extend(nums[:9])
+        if len(scores) >= 18: return scores[:18]
+    return scores[:18] if scores else None
+
+def parse_par(root):
+    pars = []
+    for node in root.iter("node"):
+        if node.get("text","").strip() != "Par":
+            continue
+        y = center(node)[1]
+        nums = [int(t) for t in row_texts(root, y, tol=30)
+                if re.match(r"^[345]$", t.strip())]
+        if len(nums) == 9:   pars.extend(nums)
+        elif len(nums) == 10: pars.extend(nums[:9])
+        if len(pars) >= 18: return pars[:18]
+    return [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
+
+def parse_meta(root):
+    course, date, n_total = "코스 미확인", "", 0
+    for node in root.iter("node"):
+        t = node.get("text","").strip()
+        if ("CC" in t or "GC" in t) and len(t) < 40:
+            course = t
+        m = re.search(r"(\d{4}\.\d{2}\.\d{2})", t)
+        if m:
+            date = m.group(1)
+        m2 = re.search(r"참여\s*(\d+)명", t)
+        if m2:
+            n_total = int(m2.group(1))
+    return course, date, n_total
+
+def fallback_scores(total):
+    scores = [0]*18
+    rem = total
+    i = 0
+    while rem != 0 and i < 100:
+        d = 1 if rem > 0 else -1
+        scores[i%18] += d
+        rem -= d
+        i += 1
+    return scores
+
+
+# ══════════════════════════════════════════════
+# HTML / PDF 생성
+# ══════════════════════════════════════════════
+
+def score_badge(s):
+    txt = str(s) if s != 0 else "0"
+    if s <= -2: return f'<span class="badge eagle">{txt}</span>'
+    if s == -1: return f'<span class="badge birdie">{txt}</span>'
+    if s ==  0: return f'<span class="badge par">{txt}</span>'
+    if s ==  1: return f'<span class="badge bogey">{txt}</span>'
+    return f'<span class="badge double-bogey">{txt}</span>'
+
+def scorecard_table(name, rank, par_list, scores, front=True):
+    if front:
+        holes, pars, sc = list(range(1,10)), par_list[:9], scores[:9]
+    else:
+        holes, pars, sc = list(range(10,19)), par_list[9:], scores[9:]
+    par_t   = sum(pars)
+    score_t = sum(sc)
+    total   = sum(scores)
+
+    hole_td  = "".join(f"<td>{h}</td>" for h in holes)
+    par_td   = "".join(f"<td>{p}</td>" for p in pars)
+    score_td = "".join(f"<td>{score_badge(s)}</td>" for s in sc)
+    s_str    = f"+{score_t}" if score_t > 0 else str(score_t)
+    t_str    = f"+{total}"  if total   > 0 else str(total)
+    medal    = {1:"🥇",2:"🥈",3:"🥉"}.get(rank, str(rank))
+
+    return f"""
+<div class="player-section">
+  <div class="player-header">
+    <span class="rank">{medal}</span>
+    <span class="pname">{name}</span>
+    <span class="total">{t_str}</span>
+  </div>
+  <table>
+    <tr class="hole-row"><td class="label">Hole</td>{hole_td}<td class="label-t">T</td></tr>
+    <tr class="par-row"> <td class="label">Par</td>{par_td}<td class="par-t">{par_t}</td></tr>
+    <tr class="score-row"><td class="label">Score</td>{score_td}<td class="score-t">{s_str}</td></tr>
+  </table>
+</div>"""
+
+CSS = """
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;
+       background:#f4f4f4; padding:16px; color:#222; }
+.header { background:linear-gradient(135deg,#1a4fd6,#0a2fa0);
+          color:#fff; padding:20px 24px; border-radius:12px 12px 0 0; }
+.header h1 { font-size:1.5rem; margin-bottom:4px; }
+.header .meta { font-size:.85rem; opacity:.85; }
+.header .stat { margin-top:8px; font-size:.82rem; opacity:.9; }
+.player-section { background:#fff; padding:14px 16px 8px; }
+.player-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.rank  { font-size:1.1rem; min-width:28px; }
+.pname { font-weight:700; font-size:1rem; flex:1; }
+.total { font-weight:800; font-size:1.1rem; color:#1a4fd6; }
+table  { width:100%; border-collapse:collapse; font-size:.82rem; margin-bottom:6px; }
+td     { text-align:center; padding:5px 2px; }
+.hole-row td  { background:#5a6472; color:#fff; font-weight:600; padding:6px 2px; }
+.par-row  td  { background:#ececec; color:#666; }
+.score-row td { background:#fff; }
+.label   { text-align:left; padding-left:6px; font-weight:600; min-width:46px; }
+.label-t,.par-t,.score-t { font-weight:700; }
+.badge { display:inline-flex; align-items:center; justify-content:center;
+         width:30px; height:30px; font-weight:600; font-size:.85rem; }
+.birdie      { border:2px solid #e74c3c; border-radius:50%; color:#e74c3c; }
+.eagle       { border:2px solid #e74c3c; border-radius:50%;
+               outline:2px solid #e74c3c; outline-offset:2px; color:#e74c3c; }
+.par         { color:#222; }
+.bogey       { border:2px solid #3a7fd5; border-radius:3px; color:#3a7fd5; }
+.double-bogey{ border:2px solid #3a7fd5; border-radius:3px;
+               outline:2px solid #3a7fd5; outline-offset:2px; color:#3a7fd5; }
+.player-divider { border:none; border-top:6px solid #f4f4f4; margin:0; }
+footer { text-align:center; padding:12px; font-size:.72rem;
+         color:#aaa; background:#fff; border-radius:0 0 12px 12px; }
+"""
+
+def build_html(game_data):
+    players  = game_data["players"]
+    par_list = game_data["par_list"]
+    course   = game_data.get("course","")
+    date     = game_data.get("date","")
+    n_total  = game_data.get("total_players", len(players))
+    now      = datetime.now().strftime("%Y.%m.%d %H:%M")
+
+    cards = ""
+    for p in players:
+        sc = p.get("scores", [0]*18)
+        cards += scorecard_table(p["name"], p["rank"], par_list, sc, front=True)
+        cards += scorecard_table(p["name"], p["rank"], par_list, sc, front=False)
+        cards += '<hr class="player-divider">'
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>네트워크플레이 - {date}</title>
+<style>{CSS}</style>
+</head>
+<body>
+<div class="header">
+  <h1>네트워크플레이</h1>
+  <div class="meta">{course} &nbsp;|&nbsp; {date}</div>
+  <div class="stat">라운드 완료 {len(players)}명 / 참여 {n_total}명</div>
+</div>
+{cards}
+<footer>골프존 네트워크플레이 스코어카드 &nbsp;|&nbsp; 생성: {now}</footer>
+</body>
+</html>"""
+
+def save_output(game_data):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    tag       = game_data["date"].replace(".","")
+    html_path = OUTPUT_DIR / f"scorecard_{tag}.html"
+    pdf_path  = OUTPUT_DIR / f"scorecard_{tag}.pdf"
+
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(build_html(game_data))
+    print(f"  [✓] HTML: {html_path}")
+
+    for cmd in [
+        f"weasyprint \"{html_path}\" \"{pdf_path}\"",
+        f"wkhtmltopdf \"{html_path}\" \"{pdf_path}\"",
+    ]:
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, timeout=120)
+            if r.returncode == 0:
+                print(f"  [✓] PDF:  {pdf_path}")
+                return str(pdf_path)
+        except Exception:
+            continue
+
+    print(f"  [!] PDF 변환기 없음 → HTML만 저장")
+    print(f"      termux-open \"{html_path}\"  →  공유 → 인쇄 → PDF")
+    return str(html_path)
+
+
+# ══════════════════════════════════════════════
+# 메인 흐름
+# ══════════════════════════════════════════════
+
+def main():
+    print("\n" + "═"*50)
+    print("  골프존 네트워크플레이 스코어 자동 수집")
+    print("═"*50 + "\n")
+
+    # 날짜 설정 (기본값: 오늘)
+    today = datetime.now().strftime("%Y.%m.%d")
+    user_date = input(f"경기 날짜 입력 [{today}]: ").strip()
+    target_date = user_date if user_date else today
+    print(f"  대상 날짜: {target_date}\n")
+
+    # ── 1. 앱 실행 및 폴더 초기화 ──────────────
+    print("[1/6] 골프존 앱 실행...")
+    SCORES_DIR.mkdir(parents=True, exist_ok=True)
+    sh(f"rm -f {SCORES_DIR}/*.xml")
+    sh(f"am start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
+    time.sleep(4)
+
+    # ── 2. 전체메뉴 클릭 ────────────────────────
+    print("[2/6] 전체메뉴 → 네트워크플레이 이동...")
+    for attempt in range(5):
+        root = dump()
+        if tap_text(root, text="전체메뉴", wait=2.0):
+            break
+        time.sleep(1)
+    else:
+        sys.exit("[오류] '전체메뉴'를 찾지 못했습니다.")
+
+    # ── 3. 네트워크플레이 클릭 ──────────────────
+    for attempt in range(5):
+        root = dump()
+        if tap_text(root, text="네트워크플레이", wait=2.0):
+            break
+        time.sleep(1)
+    else:
+        sys.exit("[오류] '네트워크플레이'를 찾지 못했습니다.")
+
+    # ── 4. 날짜 경기 선택 ───────────────────────
+    print(f"[3/6] {target_date} 경기 탐색...")
+    found_game = False
+    for _ in range(10):
+        root = dump()
+        if root is None:
+            time.sleep(1)
+            continue
+        node = find(root, has=target_date)
+        if node:
+            tap_node(node, wait=3.0)
+            found_game = True
+            break
+        swipe_up()
+
+    if not found_game:
+        sys.exit(f"[오류] '{target_date}' 날짜 경기를 찾지 못했습니다.")
+
+    # ── 5. 라운드 완료 확인 ─────────────────────
+    print("[4/6] 라운드 완료 여부 확인...")
+    ranking_0 = str(SCORES_DIR / "ranking_0.xml")
+    sh(f"uiautomator dump \"{ranking_0}\"")
+    time.sleep(0.5)
+
+    n_total = 0
+    course  = "코스 미확인"
+    date    = target_date
+    par_list = [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
+
+    try:
+        r0 = ET.parse(ranking_0).getroot()
+        course, meta_date, n_total = parse_meta(r0)
+        par_list = parse_par(r0)
+        if meta_date:
+            date = meta_date
+
+        for node in r0.iter("node"):
+            t = node.get("text","")
+            m = re.search(r"라운드 완료\s*(\d+)명.*참여\s*(\d+)명", t)
+            if m:
+                done, total = int(m.group(1)), int(m.group(2))
+                n_total = total
+                print(f"  라운드 완료 {done}명 / 참여 {total}명")
+                if done < total:
+                    ans = input(f"  아직 {total-done}명 라운드 중. 계속하시겠습니까? (y/N): ").strip().lower()
+                    if ans != 'y':
+                        sys.exit("중단.")
+                break
+    except Exception as e:
+        print(f"  확인 실패: {e} - 계속 진행")
+
+    # ── 6. 참가자 목록 수집 ─────────────────────
+    print("[5/6] 참가자 목록 수집 중...")
+    swipe_to_top()
+    time.sleep(1)
+
+    players = []
+    seen    = set()
+    no_new  = 0
+
+    for i in range(20):
+        rpath = str(SCORES_DIR / f"ranking_{i}.xml")
+        sh(f"uiautomator dump \"{rpath}\"")
+        time.sleep(0.5)
+
+        try:
+            root = ET.parse(rpath).getroot()
+        except Exception:
+            continue
+
+        new_p = extract_players(root, seen)
+        if new_p:
+            players.extend(new_p)
+            no_new = 0
+            print(f"  스크롤 {i}: {len(new_p)}명 추가 (누적 {len(players)}명)")
+        else:
+            no_new += 1
+            if no_new >= 3:
+                break
+
+        if n_total > 0 and len(players) >= n_total:
+            break
+
+        swipe_up()
+
+    players.sort(key=lambda x: x["total_relative"])
+    for i, p in enumerate(players):
+        p["rank"] = i + 1
+    print(f"  → 총 {len(players)}명 수집 완료")
+
+    # ── 7. 스코어카드 수집 ──────────────────────
+    print("[6/6] 스코어카드 수집 중...")
+    swipe_to_top()
+    time.sleep(1)
+
+    for i, p in enumerate(players):
+        name = p["name"]
+        print(f"  [{i+1}/{len(players)}] {name}...")
+
+        found = False
+        for _ in range(10):
+            root = dump()
+            node = find(root, text=name)
+            if node:
+                tap_node(node, wait=2.0)
+                found = True
+                break
+            swipe_up()
+
+        if not found:
+            print(f"    ⚠ 화면에서 찾지 못함 - 건너뜀")
+            p["scores"] = fallback_scores(p["total_relative"])
+            continue
+
+        # 스코어카드 dump
+        score_path = str(SCORES_DIR / f"score_{name}.xml")
+        sh(f"uiautomator dump \"{score_path}\"")
+        time.sleep(0.5)
+
+        try:
+            sc_root  = ET.parse(score_path).getroot()
+            scores   = parse_scores(sc_root)
+            if scores and len(scores) == 18:
+                p["scores"]   = scores
+                p_list        = parse_par(sc_root)
+                if len(p_list) == 18:
+                    par_list  = p_list
+                print(f"    ✓ {scores}")
+            else:
+                p["scores"] = fallback_scores(p["total_relative"])
+                print(f"    ⚠ 홀 데이터 부족 → 총점 대체")
+        except Exception:
+            p["scores"] = fallback_scores(p["total_relative"])
+
+        back()
+
+    # ── 8. 스코어카드 생성 ──────────────────────
+    print("\n스코어카드 생성 중...")
+
+    game_data = {
+        "date":             date,
+        "course":           course,
+        "total_players":    n_total or len(players),
+        "par_list":         par_list,
+        "players":          players,
+    }
+
+    out = save_output(game_data)
+
+    print(f"\n{'═'*50}")
+    print(f"  완료! → {out}")
+    print(f"{'═'*50}\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
     except KeyboardInterrupt:
         print("\n[중단] 사용자가 종료했습니다.")
+    except SystemExit as e:
+        print(e)
     except Exception as e:
-        print(f"\n[오류] {e}")
         import traceback
+        print(f"\n[오류] {e}")
         traceback.print_exc()
         sys.exit(1)
