@@ -105,11 +105,11 @@ def tap_text(root, text=None, has=None, wait=1.2):
         return True
     return False
 
-def screen_width():
-    """실제 화면 가로 픽셀 반환"""
-    out = sh("wm size")  # "Physical size: 1080x2316"
+def screen_size():
+    """(width, height) 반환"""
+    out = sh("wm size")
     m = re.search(r"(\d+)x(\d+)", out)
-    return int(m.group(1)) if m else 1080  # group(1)=가로, group(2)=세로
+    return (int(m.group(1)), int(m.group(2))) if m else (1080, 2316)
 
 def close_popup():
     """앱 실행 후 뜨는 공지사항/광고 팝업 닫기"""
@@ -117,37 +117,64 @@ def close_popup():
     if root is None:
         return
 
-    # ① "오늘 하루 보지 않기" 텍스트로 팝업 감지
     banner = find(root, has="오늘 하루 보지 않기")
-    if banner:
-        y_ref = center(banner)[1]
-
-        # 같은 행에서 가장 오른쪽에 있는 clickable 노드 탭 (X 버튼)
-        candidates = []
-        for node in root.iter("node"):
-            nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
-            if len(nums) >= 4:
-                ny = (nums[1]+nums[3])//2
-                if abs(ny - y_ref) < 50:
-                    candidates.append((nums[2], nums[0], node))  # x2, x1, node
-
-        if candidates:
-            candidates.sort(reverse=True)
-            x_node = candidates[0][2]
-            tap_node(x_node, wait=1.0)
-        else:
-            # 최후 수단: 화면 오른쪽 끝 기준 좌표
-            w = screen_width()
-            tap(w - 80, y_ref, wait=1.0)
-
-        print("  [공지] 팝업 닫기 완료")
-        time.sleep(0.5)
+    if not banner:
+        if tap_text(root, text="닫기", wait=1.0):
+            print("  [공지] 공지사항 닫기 완료")
         return
 
-    # ② "닫기" 버튼만 있는 공지 형태
-    if tap_text(root, text="닫기", wait=1.0):
-        print("  [공지] 공지사항 닫기 완료")
+    y_ref = center(banner)[1]
+    w, _  = screen_size()
+
+    # 배너 행 근처(y±80) 모든 노드 수집 후 분석
+    candidates = []
+    for node in root.iter("node"):
+        nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
+        if len(nums) < 4:
+            continue
+        x1, y1, x2, y2 = nums
+        ny = (y1 + y2) // 2
+        nx = (x1 + x2) // 2
+        if abs(ny - y_ref) > 80:
+            continue
+
+        txt   = node.get("text","").strip()
+        desc  = node.get("content-desc","").strip()
+        resid = node.get("resource-id","").strip()
+        click = node.get("clickable","false")
+        w_node = x2 - x1
+        h_node = y2 - y1
+
+        print(f"  [dump] x={nx:4d} y={ny:4d} | {x1},{y1},{x2},{y2} | "
+              f"click={click} | text='{txt}' desc='{desc}' id='{resid}'")
+
+        # X 버튼 후보 조건:
+        # - 화면 오른쪽 절반에 위치 (nx > w//2)
+        # - 작은 크기 (가로 200px 이하)
+        # - clickable 또는 ImageButton 계열
+        score = 0
+        if nx > w // 2:             score += 2
+        if w_node <= 200:           score += 2
+        if click == "true":         score += 3
+        if "닫기" in desc:          score += 5
+        if "close" in desc.lower(): score += 5
+        if txt in ("X","×","✕"):   score += 5
+        if x2 > w * 0.8:           score += 2   # 오른쪽 끝 80% 이상
+
+        candidates.append((score, x2, node, nx, ny))
+
+    if not candidates:
+        print(f"  [공지] 후보 없음 → 오른쪽 끝 좌표 탭")
+        tap(w - 80, y_ref, wait=1.0)
         return
+
+    # 점수 내림차순, 동점이면 x2 큰 것(오른쪽) 우선
+    candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
+    best = candidates[0]
+    print(f"  [공지] X버튼 후보 선택: x={best[3]} y={best[4]} score={best[0]}")
+    tap_node(best[2], wait=1.0)
+    print("  [공지] 팝업 닫기 완료")
+    time.sleep(0.5)
 
 def wait_for(text, timeout=20, has=False):
     """화면에 해당 텍스트가 나타날 때까지 대기"""
