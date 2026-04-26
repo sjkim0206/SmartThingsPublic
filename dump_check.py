@@ -6,9 +6,10 @@
 import subprocess, re
 import xml.etree.ElementTree as ET
 
-DUMP_PATH = "/sdcard/dump_check.xml"
+DUMP_PATH    = "/sdcard/dump_check.xml"
+UIAUTOMATOR  = "/system/bin/uiautomator"
 
-subprocess.run(f"uiautomator dump {DUMP_PATH}", shell=True)
+subprocess.run(f"{UIAUTOMATOR} dump {DUMP_PATH}", shell=True)
 
 try:
     root = ET.parse(DUMP_PATH).getroot()

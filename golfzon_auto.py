@@ -18,6 +18,12 @@ SCORES_DIR   = Path("/sdcard/Pictures/golf_scores")
 OUTPUT_DIR   = Path.home() / "storage" / "downloads" / "sundayscreen"
 TMP_DUMP     = str(SCORES_DIR / "tmp.xml")
 
+# Android 시스템 바이너리 전체 경로 (Termux PATH에 없는 경우 대비)
+UIAUTOMATOR = "/system/bin/uiautomator"
+INPUT       = "/system/bin/input"
+AM          = "/system/bin/am"
+WM          = "/system/bin/wm"
+
 
 # ══════════════════════════════════════════════
 # Shell 래퍼 (ADB 없이 직접 실행)
@@ -28,20 +34,20 @@ def sh(cmd, timeout=30):
     return r.stdout.strip()
 
 def tap(x, y, wait=1.2):
-    sh(f"input tap {x} {y}")
+    sh(f"{INPUT} tap {x} {y}")
     time.sleep(wait)
 
 def swipe_up(wait=0.8):
-    sh("input swipe 540 1400 540 700 600")
+    sh(f"{INPUT} swipe 540 1400 540 700 600")
     time.sleep(wait)
 
 def swipe_to_top():
     for _ in range(3):
-        sh("input swipe 540 700 540 1400 400")
+        sh(f"{INPUT} swipe 540 700 540 1400 400")
         time.sleep(0.5)
 
 def back(wait=1.2):
-    sh("input keyevent 4")
+    sh(f"{INPUT} keyevent 4")
     time.sleep(wait)
 
 
@@ -50,7 +56,7 @@ def back(wait=1.2):
 # ══════════════════════════════════════════════
 
 def dump(path=TMP_DUMP):
-    sh(f"uiautomator dump \"{path}\"")
+    sh(f"{UIAUTOMATOR} dump \"{path}\"")
     time.sleep(0.5)
     try:
         return ET.parse(path).getroot()
@@ -107,7 +113,7 @@ def tap_text(root, text=None, has=None, wait=1.2):
 
 def screen_size():
     """(width, height) 반환"""
-    out = sh("wm size")
+    out = sh(f"{WM} size")
     m = re.search(r"(\d+)x(\d+)", out)
     return (int(m.group(1)), int(m.group(2))) if m else (1080, 2316)
 
@@ -436,8 +442,8 @@ def main():
     # ── 1. 앱 실행 및 폴더 초기화 ──────────────
     print("[1/6] 골프존 앱 실행...")
     SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    sh(f"rm -f {SCORES_DIR}/*.xml")
-    sh(f"am start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
+    sh("rm -f {SCORES_DIR}/*.xml")
+    sh(f"{AM} start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
     time.sleep(4)
 
     # ── 1-b. 공지사항/광고 팝업 닫기 ───────────
@@ -483,7 +489,7 @@ def main():
     # ── 5. 라운드 완료 확인 ─────────────────────
     print("[4/6] 라운드 완료 여부 확인...")
     ranking_0 = str(SCORES_DIR / "ranking_0.xml")
-    sh(f"uiautomator dump \"{ranking_0}\"")
+    sh(f"{UIAUTOMATOR} dump \"{ranking_0}\"")
     time.sleep(0.5)
 
     n_total = 0
@@ -524,7 +530,7 @@ def main():
 
     for i in range(20):
         rpath = str(SCORES_DIR / f"ranking_{i}.xml")
-        sh(f"uiautomator dump \"{rpath}\"")
+        sh(f"{UIAUTOMATOR} dump \"{rpath}\"")
         time.sleep(0.5)
 
         try:
@@ -578,7 +584,7 @@ def main():
 
         # 스코어카드 dump
         score_path = str(SCORES_DIR / f"score_{name}.xml")
-        sh(f"uiautomator dump \"{score_path}\"")
+        sh(f"{UIAUTOMATOR} dump \"{score_path}\"")
         time.sleep(0.5)
 
         try:
