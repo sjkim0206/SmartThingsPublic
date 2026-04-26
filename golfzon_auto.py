@@ -105,19 +105,11 @@ def tap_text(root, text=None, has=None, wait=1.2):
         return True
     return False
 
-def rightmost_node_in_row(root, y_ref, tol=40):
-    """y_ref 근처 같은 행에서 x 좌표가 가장 오른쪽인 노드 반환"""
-    candidates = []
-    for node in root.iter("node"):
-        nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
-        if len(nums) >= 4:
-            ny = (nums[1]+nums[3])//2
-            if abs(ny - y_ref) < tol:
-                candidates.append((nums[2], node))  # x2(오른쪽 끝) 기준
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return candidates[0][1]
+def screen_width():
+    """실제 화면 가로 픽셀 반환"""
+    out = sh("wm size")  # "Physical size: 1080x2316"
+    m = re.search(r"(\d+)x(\d+)", out)
+    return int(m.group(1)) if m else 1080  # group(1)=가로, group(2)=세로
 
 def close_popup():
     """앱 실행 후 뜨는 공지사항/광고 팝업 닫기"""
@@ -130,23 +122,23 @@ def close_popup():
     if banner:
         y_ref = center(banner)[1]
 
-        # content-desc 또는 text로 X 버튼 탐색
-        closed = (
-            tap_text(root, text="X",   wait=1.0) or
-            tap_text(root, text="×",   wait=1.0)
-        )
+        # 같은 행에서 가장 오른쪽에 있는 clickable 노드 탭 (X 버튼)
+        candidates = []
+        for node in root.iter("node"):
+            nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
+            if len(nums) >= 4:
+                ny = (nums[1]+nums[3])//2
+                if abs(ny - y_ref) < 50:
+                    candidates.append((nums[2], nums[0], node))  # x2, x1, node
 
-        if not closed:
-            # 같은 행에서 가장 오른쪽 노드 탭 (X 버튼 위치)
-            x_node = rightmost_node_in_row(root, y_ref, tol=40)
-            if x_node:
-                tap_node(x_node, wait=1.0)
-                closed = True
-
-        if not closed:
-            # 최후 수단: 화면 너비 기준 오른쪽 끝 좌표
-            screen_w = int(sh("wm size").split("x")[-1]) if "x" in sh("wm size") else 1080
-            tap(screen_w - 90, y_ref, wait=1.0)
+        if candidates:
+            candidates.sort(reverse=True)
+            x_node = candidates[0][2]
+            tap_node(x_node, wait=1.0)
+        else:
+            # 최후 수단: 화면 오른쪽 끝 기준 좌표
+            w = screen_width()
+            tap(w - 80, y_ref, wait=1.0)
 
         print("  [공지] 팝업 닫기 완료")
         time.sleep(0.5)
