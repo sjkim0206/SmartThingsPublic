@@ -105,6 +105,20 @@ def tap_text(root, text=None, has=None, wait=1.2):
         return True
     return False
 
+def rightmost_node_in_row(root, y_ref, tol=40):
+    """y_ref 근처 같은 행에서 x 좌표가 가장 오른쪽인 노드 반환"""
+    candidates = []
+    for node in root.iter("node"):
+        nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
+        if len(nums) >= 4:
+            ny = (nums[1]+nums[3])//2
+            if abs(ny - y_ref) < tol:
+                candidates.append((nums[2], node))  # x2(오른쪽 끝) 기준
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
 def close_popup():
     """앱 실행 후 뜨는 공지사항/광고 팝업 닫기"""
     root = dump()
@@ -112,17 +126,28 @@ def close_popup():
         return
 
     # ① "오늘 하루 보지 않기" 텍스트로 팝업 감지
-    if find(root, has="오늘 하루 보지 않기"):
-        # X 버튼: content-desc="닫기" 또는 text="X" 또는 "×"
+    banner = find(root, has="오늘 하루 보지 않기")
+    if banner:
+        y_ref = center(banner)[1]
+
+        # content-desc 또는 text로 X 버튼 탐색
         closed = (
-            tap_text(root, text="X",    wait=1.0) or
-            tap_text(root, text="×",    wait=1.0) or
-            tap_text(root, has="닫기",  wait=1.0)
+            tap_text(root, text="X",   wait=1.0) or
+            tap_text(root, text="×",   wait=1.0)
         )
+
         if not closed:
-            # X 버튼을 텍스트로 못 찾으면 오른쪽 상단 고정 좌표 탭
-            # 이미지에서 X 위치: 화면 우측 약 490, y 약 506
-            tap(490, 506, wait=1.0)
+            # 같은 행에서 가장 오른쪽 노드 탭 (X 버튼 위치)
+            x_node = rightmost_node_in_row(root, y_ref, tol=40)
+            if x_node:
+                tap_node(x_node, wait=1.0)
+                closed = True
+
+        if not closed:
+            # 최후 수단: 화면 너비 기준 오른쪽 끝 좌표
+            screen_w = int(sh("wm size").split("x")[-1]) if "x" in sh("wm size") else 1080
+            tap(screen_w - 90, y_ref, wait=1.0)
+
         print("  [공지] 팝업 닫기 완료")
         time.sleep(0.5)
         return
