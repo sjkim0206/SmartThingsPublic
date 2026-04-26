@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
 골프존 네트워크플레이 스코어 자동 수집
-uiautomator dump + input tap 방식 (ADB 불필요)
+ADB WiFi 방식 (Termux에서 실행)
 
-실행: python3 golfzon_auto.py
+사전 준비:
+  1. pkg install android-tools
+  2. 폰 설정 → 개발자 옵션 → 무선 디버깅 ON
+  3. 무선 디버깅 → 페어링 코드로 기기 페어링 → adb pair IP:포트
+  4. adb connect IP:포트  (무선 디버깅 메인 화면의 IP:포트)
+  5. python3 golfzon_auto.py
 """
 
-import subprocess, time, sys, re, json
+import subprocess, time, sys, re, json, tempfile, os
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -16,38 +21,49 @@ GOLFZON_PKG  = "com.golfzon.android"
 GOLFZON_ACT  = "com.golfzon.android.main.activity.MainActivity"
 SCORES_DIR   = Path("/sdcard/Pictures/golf_scores")
 OUTPUT_DIR   = Path.home() / "storage" / "downloads" / "sundayscreen"
-TMP_DUMP     = str(SCORES_DIR / "tmp.xml")
-
-# Android 시스템 바이너리 전체 경로 (Termux PATH에 없는 경우 대비)
-UIAUTOMATOR = "/system/bin/uiautomator"
-INPUT       = "/system/bin/input"
-AM          = "/system/bin/am"
-WM          = "/system/bin/wm"
+TMP_DUMP     = "/sdcard/Pictures/golf_scores/tmp.xml"
+LOCAL_TMP    = str(Path.home() / "tmp_dump.xml")
 
 
 # ══════════════════════════════════════════════
-# Shell 래퍼 (ADB 없이 직접 실행)
+# ADB 래퍼
 # ══════════════════════════════════════════════
 
-def sh(cmd, timeout=30):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+def adb(cmd, timeout=30):
+    """adb shell 명령 실행"""
+    r = subprocess.run(f"adb shell {cmd}", shell=True,
+                       capture_output=True, text=True, timeout=timeout)
     return r.stdout.strip()
 
+def adb_check():
+    """ADB 연결 확인"""
+    r = subprocess.run("adb devices", shell=True, capture_output=True, text=True)
+    lines = [l for l in r.stdout.splitlines()[1:] if "\tdevice" in l]
+    if not lines:
+        print("\n[오류] ADB 기기가 연결되지 않았습니다.")
+        print("  1. pkg install android-tools")
+        print("  2. 폰 설정 → 개발자 옵션 → 무선 디버깅 ON")
+        print("  3. 무선 디버깅 → 페어링 코드로 기기 페어링")
+        print("     → adb pair <IP>:<페어링포트>")
+        print("  4. adb connect <IP>:<디버깅포트>")
+        sys.exit(1)
+    print(f"[✓] ADB 연결: {lines[0].split()[0]}")
+
 def tap(x, y, wait=1.2):
-    sh(f"{INPUT} tap {x} {y}")
+    adb(f"input tap {x} {y}")
     time.sleep(wait)
 
 def swipe_up(wait=0.8):
-    sh(f"{INPUT} swipe 540 1400 540 700 600")
+    adb("input swipe 540 1400 540 700 600")
     time.sleep(wait)
 
 def swipe_to_top():
     for _ in range(3):
-        sh(f"{INPUT} swipe 540 700 540 1400 400")
+        adb("input swipe 540 700 540 1400 400")
         time.sleep(0.5)
 
 def back(wait=1.2):
-    sh(f"{INPUT} keyevent 4")
+    adb("input keyevent 4")
     time.sleep(wait)
 
 
@@ -55,11 +71,15 @@ def back(wait=1.2):
 # UI dump 파싱
 # ══════════════════════════════════════════════
 
-def dump(path=TMP_DUMP):
-    sh(f"{UIAUTOMATOR} dump \"{path}\"")
-    time.sleep(0.5)
+def dump(remote_path=TMP_DUMP):
+    """ADB로 화면 dump → 로컬로 pull → 파싱"""
+    adb(f"uiautomator dump \"{remote_path}\"")
+    time.sleep(0.3)
+    subprocess.run(f"adb pull \"{remote_path}\" \"{LOCAL_TMP}\"",
+                   shell=True, capture_output=True)
+    time.sleep(0.2)
     try:
-        return ET.parse(path).getroot()
+        return ET.parse(LOCAL_TMP).getroot()
     except Exception:
         return None
 
@@ -113,7 +133,7 @@ def tap_text(root, text=None, has=None, wait=1.2):
 
 def screen_size():
     """(width, height) 반환"""
-    out = sh(f"{WM} size")
+    out = adb("wm size")
     m = re.search(r"(\d+)x(\d+)", out)
     return (int(m.group(1)), int(m.group(2))) if m else (1080, 2316)
 
@@ -442,8 +462,8 @@ def main():
     # ── 1. 앱 실행 및 폴더 초기화 ──────────────
     print("[1/6] 골프존 앱 실행...")
     SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    sh("rm -f {SCORES_DIR}/*.xml")
-    sh(f"{AM} start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
+    adb(f"rm -f {SCORES_DIR}/*.xml")
+    adb(f"am start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
     time.sleep(4)
 
     # ── 1-b. 공지사항/광고 팝업 닫기 ───────────
@@ -488,17 +508,13 @@ def main():
 
     # ── 5. 라운드 완료 확인 ─────────────────────
     print("[4/6] 라운드 완료 여부 확인...")
-    ranking_0 = str(SCORES_DIR / "ranking_0.xml")
-    sh(f"{UIAUTOMATOR} dump \"{ranking_0}\"")
-    time.sleep(0.5)
-
-    n_total = 0
-    course  = "코스 미확인"
-    date    = target_date
+    n_total  = 0
+    course   = "코스 미확인"
+    date     = target_date
     par_list = [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
 
     try:
-        r0 = ET.parse(ranking_0).getroot()
+        r0 = dump(str(SCORES_DIR / "ranking_0.xml"))
         course, meta_date, n_total = parse_meta(r0)
         par_list = parse_par(r0)
         if meta_date:
@@ -529,13 +545,8 @@ def main():
     no_new  = 0
 
     for i in range(20):
-        rpath = str(SCORES_DIR / f"ranking_{i}.xml")
-        sh(f"{UIAUTOMATOR} dump \"{rpath}\"")
-        time.sleep(0.5)
-
-        try:
-            root = ET.parse(rpath).getroot()
-        except Exception:
+        root = dump(str(SCORES_DIR / f"ranking_{i}.xml"))
+        if root is None:
             continue
 
         new_p = extract_players(root, seen)
@@ -583,12 +594,8 @@ def main():
             continue
 
         # 스코어카드 dump
-        score_path = str(SCORES_DIR / f"score_{name}.xml")
-        sh(f"{UIAUTOMATOR} dump \"{score_path}\"")
-        time.sleep(0.5)
-
         try:
-            sc_root  = ET.parse(score_path).getroot()
+            sc_root = dump(str(SCORES_DIR / f"score_{name}.xml"))
             scores   = parse_scores(sc_root)
             if scores and len(scores) == 18:
                 p["scores"]   = scores

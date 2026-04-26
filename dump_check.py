@@ -5,21 +5,24 @@
 """
 import subprocess, re
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
-DUMP_PATH    = "/sdcard/dump_check.xml"
-UIAUTOMATOR  = "/system/bin/uiautomator"
+REMOTE = "/sdcard/dump_check.xml"
+LOCAL  = str(Path.home() / "dump_check.xml")
 
-subprocess.run(f"{UIAUTOMATOR} dump {DUMP_PATH}", shell=True)
+subprocess.run(f"adb shell uiautomator dump {REMOTE}", shell=True)
+subprocess.run(f"adb pull {REMOTE} {LOCAL}", shell=True, capture_output=True)
 
 try:
-    root = ET.parse(DUMP_PATH).getroot()
+    root = ET.parse(LOCAL).getroot()
 except Exception as e:
     print(f"dump 실패: {e}")
+    print("ADB 연결 확인: adb devices")
     exit(1)
 
-print(f"\n{'─'*80}")
-print(f"{'x':>5} {'y':>5}  {'bounds':<25} {'click':<6} {'text':<20} {'desc':<20} {'resource-id'}")
-print(f"{'─'*80}")
+print(f"\n{'─'*90}")
+print(f"{'x':>5} {'y':>5}  {'bounds':<28} {'click':<6} {'text':<20} {'desc':<20} {'resource-id'}")
+print(f"{'─'*90}")
 
 for node in root.iter("node"):
     nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
@@ -33,8 +36,7 @@ for node in root.iter("node"):
     resid = node.get("resource-id","").strip()
     click = node.get("clickable","")
 
-    # 텍스트/desc/clickable 있는 노드만 출력
     if txt or desc or click == "true":
         print(f"{nx:>5} {ny:>5}  [{x1},{y1},{x2},{y2}]  {click:<6} {txt:<20} {desc:<20} {resid}")
 
-print(f"{'─'*80}\n")
+print(f"{'─'*90}\n")
