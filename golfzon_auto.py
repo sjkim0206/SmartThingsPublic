@@ -408,10 +408,10 @@ def main():
     print("  골프존 네트워크플레이 스코어 자동 수집")
     print("═"*50 + "\n")
 
-    # 날짜 설정 (기본값: 오늘)
-    today = datetime.now().strftime("%Y.%m.%d")
-    user_date = input(f"경기 날짜 입력 [{today}]: ").strip()
-    target_date = user_date if user_date else today
+    # 날짜 설정 (기본값: 2026.03.29)
+    default_date = "2026.03.29"
+    user_date = input(f"경기 날짜 입력 [{default_date}]: ").strip()
+    target_date = user_date if user_date else default_date
     print(f"  대상 날짜: {target_date}\n")
 
     # ── 1. 앱 실행 및 폴더 초기화 ──────────────
