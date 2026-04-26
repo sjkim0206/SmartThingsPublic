@@ -105,6 +105,33 @@ def tap_text(root, text=None, has=None, wait=1.2):
         return True
     return False
 
+def close_popup():
+    """앱 실행 후 뜨는 공지사항/광고 팝업 닫기"""
+    root = dump()
+    if root is None:
+        return
+
+    # ① "오늘 하루 보지 않기" 텍스트로 팝업 감지
+    if find(root, has="오늘 하루 보지 않기"):
+        # X 버튼: content-desc="닫기" 또는 text="X" 또는 "×"
+        closed = (
+            tap_text(root, text="X",    wait=1.0) or
+            tap_text(root, text="×",    wait=1.0) or
+            tap_text(root, has="닫기",  wait=1.0)
+        )
+        if not closed:
+            # X 버튼을 텍스트로 못 찾으면 오른쪽 상단 고정 좌표 탭
+            # 이미지에서 X 위치: 화면 우측 약 490, y 약 506
+            tap(490, 506, wait=1.0)
+        print("  [공지] 팝업 닫기 완료")
+        time.sleep(0.5)
+        return
+
+    # ② "닫기" 버튼만 있는 공지 형태
+    if tap_text(root, text="닫기", wait=1.0):
+        print("  [공지] 공지사항 닫기 완료")
+        return
+
 def wait_for(text, timeout=20, has=False):
     """화면에 해당 텍스트가 나타날 때까지 대기"""
     for _ in range(timeout * 2):
@@ -368,6 +395,9 @@ def main():
     sh(f"rm -f {SCORES_DIR}/*.xml")
     sh(f"am start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
     time.sleep(4)
+
+    # ── 1-b. 공지사항/광고 팝업 닫기 ───────────
+    close_popup()
 
     # ── 2. 전체메뉴 클릭 ────────────────────────
     print("[2/6] 전체메뉴 → 네트워크플레이 이동...")
