@@ -29,25 +29,88 @@ LOCAL_TMP    = str(Path.home() / "tmp_dump.xml")
 # ADB 래퍼
 # ══════════════════════════════════════════════
 
+CACHE_FILE = str(Path.home() / ".adb_last_connection")  # 마지막 연결 정보 저장
+
+
+def _run(cmd, timeout=10):
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    return r.stdout.strip()
+
+def _is_connected():
+    out = _run("adb devices")
+    return any("\tdevice" in l for l in out.splitlines()[1:])
+
+def _try_connect(target):
+    out = _run(f"adb connect {target}", timeout=5)
+    return _is_connected()
+
+def adb_auto_connect():
+    """ADB 자동 연결 - 순서대로 시도"""
+
+    # 1. 이미 연결되어 있으면 패스
+    if _is_connected():
+        out = _run("adb devices")
+        addr = [l.split()[0] for l in out.splitlines()[1:] if "\tdevice" in l][0]
+        print(f"[✓] ADB 이미 연결됨: {addr}")
+        return
+
+    print("[~] ADB 자동 연결 시도 중...")
+
+    # 2. 마지막 성공한 연결 정보로 재시도
+    if Path(CACHE_FILE).exists():
+        last = Path(CACHE_FILE).read_text().strip()
+        print(f"  → 저장된 주소 시도: {last}")
+        if _try_connect(last):
+            print(f"[✓] ADB 연결 성공: {last}")
+            return
+
+    # 3. mDNS 자동 검색 (Android 11+)
+    mdns = _run("adb mdns services", timeout=6)
+    for line in mdns.splitlines():
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", line)
+        if m:
+            target = f"{m.group(1)}:{m.group(2)}"
+            print(f"  → mDNS 발견: {target}")
+            if _try_connect(target):
+                Path(CACHE_FILE).write_text(target)
+                print(f"[✓] ADB mDNS 연결 성공: {target}")
+                return
+
+    # 4. localhost 고정 포트 시도
+    for port in [5555, 5556, 5037]:
+        target = f"localhost:{port}"
+        print(f"  → 포트 시도: {target}")
+        if _try_connect(target):
+            Path(CACHE_FILE).write_text(target)
+            print(f"[✓] ADB 연결 성공: {target}")
+            return
+
+    # 5. 폰 WiFi IP 자동 추출 후 시도
+    ip_out = _run("adb shell ip addr show wlan0 2>/dev/null || ip addr show wlan0", timeout=5)
+    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", ip_out)
+    if m:
+        ip = m.group(1)
+        for port in range(37000, 37020):
+            target = f"{ip}:{port}"
+            if _try_connect(target):
+                Path(CACHE_FILE).write_text(target)
+                print(f"[✓] ADB 연결 성공: {target}")
+                return
+
+    # 6. 모두 실패 → 수동 안내
+    print("\n[!] ADB 자동 연결 실패. 아래 순서로 수동 연결하세요:")
+    print("  1. 폰 설정 → 개발자 옵션 → 무선 디버깅 ON")
+    print("  2. 무선 디버깅 탭 → '페어링 코드로 기기 페어링'")
+    print("     → adb pair <IP>:<페어링포트>  (최초 1회만)")
+    print("  3. adb connect <IP>:<디버깅포트>")
+    print("  4. 다시 python3 golfzon_auto.py 실행")
+    sys.exit(1)
+
 def adb(cmd, timeout=30):
     """adb shell 명령 실행"""
     r = subprocess.run(f"adb shell {cmd}", shell=True,
                        capture_output=True, text=True, timeout=timeout)
     return r.stdout.strip()
-
-def adb_check():
-    """ADB 연결 확인"""
-    r = subprocess.run("adb devices", shell=True, capture_output=True, text=True)
-    lines = [l for l in r.stdout.splitlines()[1:] if "\tdevice" in l]
-    if not lines:
-        print("\n[오류] ADB 기기가 연결되지 않았습니다.")
-        print("  1. pkg install android-tools")
-        print("  2. 폰 설정 → 개발자 옵션 → 무선 디버깅 ON")
-        print("  3. 무선 디버깅 → 페어링 코드로 기기 페어링")
-        print("     → adb pair <IP>:<페어링포트>")
-        print("  4. adb connect <IP>:<디버깅포트>")
-        sys.exit(1)
-    print(f"[✓] ADB 연결: {lines[0].split()[0]}")
 
 def tap(x, y, wait=1.2):
     adb(f"input tap {x} {y}")
@@ -454,6 +517,9 @@ def main():
     print("═"*50 + "\n")
 
     # 날짜 설정 (기본값: 2026.03.29)
+    # ── 0. ADB 자동 연결 ────────────────────────
+    adb_auto_connect()
+
     default_date = "2026.03.29"
     user_date = input(f"경기 날짜 입력 [{default_date}]: ").strip()
     target_date = user_date if user_date else default_date
