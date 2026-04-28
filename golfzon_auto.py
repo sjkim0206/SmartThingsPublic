@@ -33,16 +33,23 @@ CACHE_FILE = str(Path.home() / ".adb_last_connection")  # 마지막 연결 정�
 
 
 def _run(cmd, timeout=10):
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-    return r.stdout.strip()
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True,
+                           text=True, timeout=timeout)
+        return r.stdout.strip()
+    except (subprocess.TimeoutExpired, Exception):
+        return ""
 
 def _is_connected():
-    out = _run("adb devices")
+    out = _run("adb devices", timeout=5)
     return any("\tdevice" in l for l in out.splitlines()[1:])
 
 def _try_connect(target):
-    out = _run(f"adb connect {target}", timeout=5)
-    return _is_connected()
+    try:
+        _run(f"adb connect {target}", timeout=5)
+        return _is_connected()
+    except Exception:
+        return False
 
 def adb_auto_connect():
     """ADB 자동 연결 - 순서대로 시도"""
@@ -76,8 +83,8 @@ def adb_auto_connect():
                 print(f"[✓] ADB mDNS 연결 성공: {target}")
                 return
 
-    # 4. localhost 고정 포트 시도
-    for port in [5555, 5556, 5037]:
+    # 4. localhost 고정 포트 시도 (5037 제외 - ADB 서버 포트라 타임아웃 발생)
+    for port in [5555, 5556]:
         target = f"localhost:{port}"
         print(f"  → 포트 시도: {target}")
         if _try_connect(target):
