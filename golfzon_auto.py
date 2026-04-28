@@ -52,12 +52,20 @@ def _try_connect(target):
         return False
 
 def _get_local_ip():
-    """Termux 자체 명령으로 WiFi IP 조회 (ADB 불필요)"""
-    for cmd in ["ip addr show wlan0", "ifconfig wlan0"]:
+    """Termux에서 WiFi IP 조회 (여러 방법 시도)"""
+    cmds = [
+        "ip addr show wlan0",
+        "ifconfig wlan0",
+        "ip route",
+        "hostname -I",
+        "ip addr",
+    ]
+    for cmd in cmds:
         out = _run(cmd, timeout=5)
-        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
-        if m and not m.group(1).startswith("127."):
-            return m.group(1)
+        for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)", out):
+            ip = m.group(1)
+            if not ip.startswith("127.") and not ip.startswith("169."):
+                return ip
     return None
 
 def adb_auto_connect():
@@ -105,15 +113,19 @@ def adb_auto_connect():
                 Path(CACHE_FILE).write_text(target)
                 print(f"[✓] ADB mDNS 연결 성공: {target}")
                 return
-                return
 
-    # 6. 모두 실패 → 수동 안내
-    print("\n[!] ADB 자동 연결 실패. 아래 순서로 수동 연결하세요:")
-    print("  1. 폰 설정 → 개발자 옵션 → 무선 디버깅 ON")
-    print("  2. 무선 디버깅 탭 → '페어링 코드로 기기 페어링'")
-    print("     → adb pair <IP>:<페어링포트>  (최초 1회만)")
-    print("  3. adb connect <IP>:<디버깅포트>")
-    print("  4. 다시 python3 golfzon_auto.py 실행")
+    # 6. 모두 실패 → IP:포트 직접 입력
+    print("\n[!] 자동 연결 실패.")
+    print("  무선 디버깅 화면(개발자 옵션 → 무선 디버깅)에 표시된")
+    print("  IP주소:포트번호를 입력하세요.")
+    manual = input("  IP:포트 입력 (예: 172.30.1.82:38149) → ").strip()
+    if manual:
+        if _try_connect(manual):
+            Path(CACHE_FILE).write_text(manual)
+            print(f"[✓] ADB 연결 성공: {manual}")
+            return
+        else:
+            print(f"[오류] {manual} 연결 실패. 페어링 여부와 포트를 확인하세요.")
     sys.exit(1)
 
 def adb(cmd, timeout=30):
