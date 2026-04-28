@@ -51,6 +51,15 @@ def _try_connect(target):
     except Exception:
         return False
 
+def _get_local_ip():
+    """Termux 자체 명령으로 WiFi IP 조회 (ADB 불필요)"""
+    for cmd in ["ip addr show wlan0", "ifconfig wlan0"]:
+        out = _run(cmd, timeout=5)
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+        if m and not m.group(1).startswith("127."):
+            return m.group(1)
+    return None
+
 def adb_auto_connect():
     """ADB 자동 연결 - 순서대로 시도"""
 
@@ -71,7 +80,21 @@ def adb_auto_connect():
             print(f"[✓] ADB 연결 성공: {last}")
             return
 
-    # 3. mDNS 자동 검색 (Android 11+)
+    # 3. Termux에서 직접 WiFi IP 조회 → 포트 범위 스캔
+    ip = _get_local_ip()
+    if ip:
+        print(f"  → WiFi IP 감지: {ip} (포트 스캔 중...)")
+        # Android 11+ 무선 디버깅 포트 범위
+        for port in list(range(37000, 37100)) + list(range(5555, 5558)):
+            target = f"{ip}:{port}"
+            if _try_connect(target):
+                Path(CACHE_FILE).write_text(target)
+                print(f"[✓] ADB 연결 성공: {target}")
+                return
+    else:
+        print("  → WiFi IP 조회 실패 (WiFi 연결 확인 필요)")
+
+    # 4. mDNS 자동 검색 (Android 11+)
     mdns = _run("adb mdns services", timeout=6)
     for line in mdns.splitlines():
         m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", line)
@@ -82,26 +105,6 @@ def adb_auto_connect():
                 Path(CACHE_FILE).write_text(target)
                 print(f"[✓] ADB mDNS 연결 성공: {target}")
                 return
-
-    # 4. localhost 고정 포트 시도 (5037 제외 - ADB 서버 포트라 타임아웃 발생)
-    for port in [5555, 5556]:
-        target = f"localhost:{port}"
-        print(f"  → 포트 시도: {target}")
-        if _try_connect(target):
-            Path(CACHE_FILE).write_text(target)
-            print(f"[✓] ADB 연결 성공: {target}")
-            return
-
-    # 5. 폰 WiFi IP 자동 추출 후 시도
-    ip_out = _run("adb shell ip addr show wlan0 2>/dev/null || ip addr show wlan0", timeout=5)
-    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", ip_out)
-    if m:
-        ip = m.group(1)
-        for port in range(37000, 37020):
-            target = f"{ip}:{port}"
-            if _try_connect(target):
-                Path(CACHE_FILE).write_text(target)
-                print(f"[✓] ADB 연결 성공: {target}")
                 return
 
     # 6. 모두 실패 → 수동 안내
