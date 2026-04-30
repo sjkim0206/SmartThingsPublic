@@ -1,0 +1,14 @@
+{
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": ".*",
+        "notMatch": ".*/\\.git/.*",
+        "isAsync": true,
+        "cmd": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}/scripts/git-auto-sync.ps1\""
+      }
+    ]
+  },
+  "git.postCommitCommand": "push",
+  "git.enableSmartCommit": true
+}
