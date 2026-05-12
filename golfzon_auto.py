@@ -1,323 +1,286 @@
 #!/usr/bin/env python3
 """
 골프존 네트워크플레이 스코어 자동 수집
-ADB WiFi 방식 (Termux에서 실행)
+Python (Termux) + Auto.js 하이브리드 방식
+
+역할 분리:
+  golfzon_autojs.js  →  Auto.js 앱에서 실행 (UI 탭/스와이프)
+  golfzon_auto.py    →  Termux에서 실행   (데이터 파싱 + 스코어카드 생성)
+
+통신 방식 (파일 IPC, ADB 불필요):
+  /sdcard/golfzon/ready.json  Auto.js 시작 신호
+  /sdcard/golfzon/cmd.json    Python → Auto.js 명령
+  /sdcard/golfzon/done.json   Auto.js → Python 완료 신호
+  /sdcard/golfzon/dump.json   Auto.js → Python 화면 노드 JSON
 
 사전 준비:
-  1. pkg install android-tools
-  2. 폰 설정 → 개발자 옵션 → 무선 디버깅 ON
-  3. 무선 디버깅 → 페어링 코드로 기기 페어링 → adb pair IP:포트
-  4. adb connect IP:포트  (무선 디버깅 메인 화면의 IP:포트)
-  5. python3 golfzon_auto.py
+  1. AutoJs6 설치 → 설정 → 접근성 → AutoJs6 활성화
+  2. Auto.js에서 golfzon_autojs.js 실행 (서비스 대기 유지)
+  3. termux-setup-storage  (최초 1회)
+  4. python3 golfzon_auto.py
 """
 
-import subprocess, time, sys, re, json, tempfile, os
-import xml.etree.ElementTree as ET
+import json, time, sys, re, subprocess
 from datetime import datetime
 from pathlib import Path
 
-# ── 설정 ────────────────────────────────────────
-GOLFZON_PKG  = "com.golfzon.android"
-GOLFZON_ACT  = "com.golfzon.android.main.activity.MainActivity"
-SCORES_DIR   = Path("/sdcard/Pictures/golf_scores")
-OUTPUT_DIR   = Path.home() / "storage" / "downloads" / "sundayscreen"
-TMP_DUMP     = "/sdcard/Pictures/golf_scores/tmp.xml"
-LOCAL_TMP    = str(Path.home() / "tmp_dump.xml")
+# ── 경로 설정 ──────────────────────────────────────────
+GOLFZON_PKG = "com.golfzon.android"
+BASE_DIR    = Path("/sdcard/golfzon")
+CMD_FILE    = BASE_DIR / "cmd.json"
+DONE_FILE   = BASE_DIR / "done.json"
+DUMP_FILE   = BASE_DIR / "dump.json"
+READY_FILE  = BASE_DIR / "ready.json"
+OUTPUT_DIR  = Path("/sdcard/sundayscreen")
+
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ══════════════════════════════════════════════
-# ADB 래퍼
-# ══════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# Auto.js IPC 통신 레이어
+# ══════════════════════════════════════════════════════
 
-CACHE_FILE = str(Path.home() / ".adb_last_connection")  # 마지막 연결 정보 저장
+_seq      = 0
+_screen_w = 1080
+_screen_h = 2316
 
 
-def _run(cmd, timeout=10):
-    try:
-        r = subprocess.run(cmd, shell=True, capture_output=True,
-                           text=True, timeout=timeout)
-        return r.stdout.strip()
-    except (subprocess.TimeoutExpired, Exception):
-        return ""
+def wait_for_autojs(timeout=120):
+    """Auto.js 서비스가 ready.json을 쓸 때까지 대기"""
+    print("[~] Auto.js 서비스 대기 중...")
+    print("    → Auto.js 앱에서 golfzon_autojs.js 를 실행하세요")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if READY_FILE.exists():
+            try:
+                info = json.loads(READY_FILE.read_text())
+                global _screen_w, _screen_h
+                _screen_w = info.get("screen_w", 1080)
+                _screen_h = info.get("screen_h", 2316)
+                print(f"[✓] Auto.js 연결됨 (v{info.get('version','?')}, "
+                      f"화면 {_screen_w}x{_screen_h})")
+                return True
+            except Exception:
+                pass
+        time.sleep(1)
+    return False
 
-def _is_connected():
-    out = _run("adb devices", timeout=5)
-    return any("\tdevice" in l for l in out.splitlines()[1:])
 
-def _try_connect(target):
-    try:
-        _run(f"adb connect {target}", timeout=5)
-        return _is_connected()
-    except Exception:
-        return False
+def send(action, timeout=30, **kwargs):
+    """명령 전송 → done.json 응답 대기 → 결과 반환"""
+    global _seq
+    _seq += 1
+    cmd = {"seq": _seq, "action": action}
+    cmd.update(kwargs)
 
-def _get_local_ip():
-    """Termux에서 WiFi IP 조회 (여러 방법 시도)"""
-    cmds = [
-        "ip addr show wlan0",
-        "ifconfig wlan0",
-        "ip route",
-        "hostname -I",
-        "ip addr",
-    ]
-    for cmd in cmds:
-        out = _run(cmd, timeout=5)
-        for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)", out):
-            ip = m.group(1)
-            if not ip.startswith("127.") and not ip.startswith("169."):
-                return ip
-    return None
+    if DONE_FILE.exists():
+        DONE_FILE.unlink()
 
-def adb_auto_connect():
-    """ADB 자동 연결 - 순서대로 시도"""
+    CMD_FILE.write_text(json.dumps(cmd, ensure_ascii=False))
 
-    # 1. 이미 연결되어 있으면 패스
-    if _is_connected():
-        out = _run("adb devices")
-        addr = [l.split()[0] for l in out.splitlines()[1:] if "\tdevice" in l][0]
-        print(f"[✓] ADB 이미 연결됨: {addr}")
-        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if DONE_FILE.exists():
+            try:
+                return json.loads(DONE_FILE.read_text())
+            except Exception:
+                pass
+        time.sleep(0.3)
 
-    print("[~] ADB 자동 연결 시도 중...")
+    raise TimeoutError(f"Auto.js 응답 없음 (action={action}, {timeout}s 초과)")
 
-    # 2. 마지막 성공한 연결 정보로 재시도
-    if Path(CACHE_FILE).exists():
-        last = Path(CACHE_FILE).read_text().strip()
-        print(f"  → 저장된 주소 시도: {last}")
-        if _try_connect(last):
-            print(f"[✓] ADB 연결 성공: {last}")
-            return
 
-    # 3. Termux에서 직접 WiFi IP 조회 → 포트 범위 스캔
-    ip = _get_local_ip()
-    if ip:
-        print(f"  → WiFi IP 감지: {ip} (포트 스캔 중...)")
-        # Android 11+ 무선 디버깅 포트 범위
-        for port in list(range(37000, 37100)) + list(range(5555, 5558)):
-            target = f"{ip}:{port}"
-            if _try_connect(target):
-                Path(CACHE_FILE).write_text(target)
-                print(f"[✓] ADB 연결 성공: {target}")
-                return
-    else:
-        print("  → WiFi IP 조회 실패 (WiFi 연결 확인 필요)")
+# ── 고수준 UI 액션 ─────────────────────────────────────
 
-    # 4. mDNS 자동 검색 (Android 11+)
-    mdns = _run("adb mdns services", timeout=6)
-    for line in mdns.splitlines():
-        m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)", line)
-        if m:
-            target = f"{m.group(1)}:{m.group(2)}"
-            print(f"  → mDNS 발견: {target}")
-            if _try_connect(target):
-                Path(CACHE_FILE).write_text(target)
-                print(f"[✓] ADB mDNS 연결 성공: {target}")
-                return
+def tap_text(text, wait=1.2, timeout=10):
+    r = send("tap_text", text=text, wait=int(wait * 1000), timeout=timeout + 5)
+    return r.get("found", False)
 
-    # 6. 모두 실패 → IP:포트 직접 입력
-    print("\n[!] 자동 연결 실패.")
-    print("  무선 디버깅 화면(개발자 옵션 → 무선 디버깅)에 표시된")
-    print("  IP주소:포트번호를 입력하세요.")
-    manual = input("  IP:포트 입력 (예: 172.30.1.82:38149) → ").strip()
-    if manual:
-        if _try_connect(manual):
-            Path(CACHE_FILE).write_text(manual)
-            print(f"[✓] ADB 연결 성공: {manual}")
-            return
-        else:
-            print(f"[오류] {manual} 연결 실패. 페어링 여부와 포트를 확인하세요.")
-    sys.exit(1)
 
-def adb(cmd, timeout=30):
-    """adb shell 명령 실행"""
-    r = subprocess.run(f"adb shell {cmd}", shell=True,
-                       capture_output=True, text=True, timeout=timeout)
-    return r.stdout.strip()
+def tap_contains(text, wait=1.2, timeout=10):
+    r = send("tap_contains", text=text, wait=int(wait * 1000), timeout=timeout + 5)
+    return r.get("found", False)
+
 
 def tap(x, y, wait=1.2):
-    adb(f"input tap {x} {y}")
-    time.sleep(wait)
+    send("tap_xy", x=x, y=y, wait=int(wait * 1000), timeout=10)
+
 
 def swipe_up(wait=0.8):
-    adb("input swipe 540 1400 540 700 600")
-    time.sleep(wait)
+    send("swipe_up", wait=int(wait * 1000), timeout=10)
+
 
 def swipe_to_top():
     for _ in range(3):
-        adb("input swipe 540 700 540 1400 400")
-        time.sleep(0.5)
+        send("swipe_down", wait=500, timeout=10)
+
 
 def back(wait=1.2):
-    adb("input keyevent 4")
-    time.sleep(wait)
+    send("back", wait=int(wait * 1000), timeout=10)
 
 
-# ══════════════════════════════════════════════
-# UI dump 파싱
-# ══════════════════════════════════════════════
-
-def dump(remote_path=TMP_DUMP):
-    """ADB로 화면 dump → 로컬로 pull → 파싱"""
-    adb(f"uiautomator dump \"{remote_path}\"")
-    time.sleep(0.3)
-    subprocess.run(f"adb pull \"{remote_path}\" \"{LOCAL_TMP}\"",
-                   shell=True, capture_output=True)
-    time.sleep(0.2)
+def dump():
+    """화면 덤프 요청 → JSON 노드 리스트 반환"""
+    send("dump", timeout=15)
+    if not DUMP_FILE.exists():
+        return None
     try:
-        return ET.parse(LOCAL_TMP).getroot()
+        return json.loads(DUMP_FILE.read_text())
     except Exception:
         return None
 
-def center(node):
-    nums = list(map(int, re.findall(r"\d+", node.get("bounds", "[0,0][1,1]"))))
-    return (nums[0]+nums[2])//2, (nums[1]+nums[3])//2 if len(nums) >= 4 else (0, 0)
 
-def find(root, text=None, has=None, res_id=None):
-    """text: 완전일치 / has: 부분일치 / res_id: resource-id 포함"""
-    if root is None:
+def launch_app():
+    send("launch", pkg=GOLFZON_PKG, wait=4000, timeout=15)
+
+
+# ══════════════════════════════════════════════════════
+# 노드 파싱 유틸  (JSON 기반 — ADB XML 대신)
+# ══════════════════════════════════════════════════════
+# 노드 형식: {"text":"...", "desc":"...", "id":"...",
+#             "bounds":[left,top,right,bottom], "clickable":bool}
+
+def center(node):
+    b = node["bounds"]
+    return (b[0] + b[2]) // 2, (b[1] + b[3]) // 2
+
+
+def find(nodes, text=None, has=None, res_id=None):
+    if nodes is None:
         return None
-    for node in root.iter("node"):
-        if text    is not None and node.get("text","") == text:           return node
-        if has     is not None and has in node.get("text",""):            return node
-        if res_id  is not None and res_id in node.get("resource-id",""): return node
+    for n in nodes:
+        if text   is not None and n.get("text", "") == text:     return n
+        if has    is not None and has in n.get("text", ""):       return n
+        if res_id is not None and res_id in n.get("id", ""):      return n
     return None
 
-def find_all(root, text=None, has=None):
+
+def find_all(nodes, text=None, has=None):
     out = []
-    if root is None:
+    if nodes is None:
         return out
-    for node in root.iter("node"):
-        if text is not None and node.get("text","") == text:  out.append(node)
-        elif has is not None and has in node.get("text",""):  out.append(node)
+    for n in nodes:
+        if text is not None and n.get("text", "") == text:   out.append(n)
+        elif has is not None and has in n.get("text", ""):   out.append(n)
     return out
 
-def row_texts(root, y_ref, tol=45):
+
+def row_texts(nodes, y_ref, tol=45):
     """y_ref 근처 같은 행의 텍스트를 x 순서대로 반환"""
     items = []
-    for node in root.iter("node"):
-        nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
-        if len(nums) >= 4:
-            ny = (nums[1]+nums[3])//2
-            if abs(ny-y_ref) < tol:
-                t = node.get("text","").strip()
-                if t:
-                    items.append((nums[0], t))
+    for n in (nodes or []):
+        b  = n.get("bounds", [0, 0, 1, 1])
+        ny = (b[1] + b[3]) // 2
+        if abs(ny - y_ref) < tol:
+            t = n.get("text", "").strip()
+            if t:
+                items.append((b[0], t))
     items.sort()
     return [t for _, t in items]
+
 
 def tap_node(node, wait=1.2):
     x, y = center(node)
     tap(x, y, wait)
 
-def tap_text(root, text=None, has=None, wait=1.2):
-    node = find(root, text=text, has=has)
+
+def tap_text_node(nodes, text=None, has=None, wait=1.2):
+    node = find(nodes, text=text, has=has)
     if node:
         tap_node(node, wait)
         return True
     return False
 
-def screen_size():
-    """(width, height) 반환"""
-    out = adb("wm size")
-    m = re.search(r"(\d+)x(\d+)", out)
-    return (int(m.group(1)), int(m.group(2))) if m else (1080, 2316)
+
+# ══════════════════════════════════════════════════════
+# 팝업 닫기
+# ══════════════════════════════════════════════════════
 
 def close_popup():
-    """앱 실행 후 뜨는 공지사항/광고 팝업 닫기"""
-    root = dump()
-    if root is None:
+    """앱 실행 후 공지사항/광고 팝업 닫기"""
+    nodes = dump()
+    if nodes is None:
         return
 
-    banner = find(root, has="오늘 하루 보지 않기")
+    banner = find(nodes, has="오늘 하루 보지 않기")
     if not banner:
-        if tap_text(root, text="닫기", wait=1.0):
-            print("  [공지] 공지사항 닫기 완료")
+        if tap_text("닫기", wait=1.0):
+            print("  [공지] 닫기 버튼 클릭")
         return
 
     y_ref = center(banner)[1]
-    w, _  = screen_size()
+    tap_text("오늘 하루 보지 않기", wait=0.5)
 
-    # 배너 행 근처(y±80) 모든 노드 수집 후 분석
     candidates = []
-    for node in root.iter("node"):
-        nums = list(map(int, re.findall(r"\d+", node.get("bounds",""))))
-        if len(nums) < 4:
-            continue
-        x1, y1, x2, y2 = nums
-        ny = (y1 + y2) // 2
-        nx = (x1 + x2) // 2
+    for n in nodes:
+        b  = n.get("bounds", [0, 0, 1, 1])
+        ny = (b[1] + b[3]) // 2
+        nx = (b[0] + b[2]) // 2
         if abs(ny - y_ref) > 80:
             continue
 
-        txt   = node.get("text","").strip()
-        desc  = node.get("content-desc","").strip()
-        resid = node.get("resource-id","").strip()
-        click = node.get("clickable","false")
-        w_node = x2 - x1
-        h_node = y2 - y1
+        txt      = n.get("text", "").strip()
+        desc_txt = n.get("desc", "").strip()
+        clickable = n.get("clickable", False)
+        w_node   = b[2] - b[0]
 
-        print(f"  [dump] x={nx:4d} y={ny:4d} | {x1},{y1},{x2},{y2} | "
-              f"click={click} | text='{txt}' desc='{desc}' id='{resid}'")
-
-        # X 버튼 후보 조건:
-        # - 화면 오른쪽 절반에 위치 (nx > w//2)
-        # - 작은 크기 (가로 200px 이하)
-        # - clickable 또는 ImageButton 계열
         score = 0
-        if nx > w // 2:             score += 2
-        if w_node <= 200:           score += 2
-        if click == "true":         score += 3
-        if "닫기" in desc:          score += 5
-        if "close" in desc.lower(): score += 5
-        if txt in ("X","×","✕"):   score += 5
-        if x2 > w * 0.8:           score += 2   # 오른쪽 끝 80% 이상
+        if nx > _screen_w // 2:          score += 2
+        if w_node <= 200:                score += 2
+        if clickable:                    score += 3
+        if "닫기" in desc_txt:           score += 5
+        if "close" in desc_txt.lower(): score += 5
+        if txt in ("X", "×", "✕"):      score += 5
+        if b[2] > _screen_w * 0.8:      score += 2
 
-        candidates.append((score, x2, node, nx, ny))
+        candidates.append((score, b[2], n, nx, ny))
 
     if not candidates:
-        print(f"  [공지] 후보 없음 → 오른쪽 끝 좌표 탭")
-        tap(w - 80, y_ref, wait=1.0)
+        tap(_screen_w - 80, y_ref, wait=1.0)
         return
 
-    # 점수 내림차순, 동점이면 x2 큰 것(오른쪽) 우선
     candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
     best = candidates[0]
-    print(f"  [공지] X버튼 후보 선택: x={best[3]} y={best[4]} score={best[0]}")
-    tap_node(best[2], wait=1.0)
+    print(f"  [공지] X버튼 탭: ({best[3]},{best[4]}) score={best[0]}")
+    tap(best[3], best[4], wait=1.0)
     print("  [공지] 팝업 닫기 완료")
-    time.sleep(0.5)
 
-def wait_for(text, timeout=20, has=False):
-    """화면에 해당 텍스트가 나타날 때까지 대기"""
-    for _ in range(timeout * 2):
-        root = dump()
-        node = find(root, has=text if has else None,
-                         text=text if not has else None)
+
+def wait_for(text_str, timeout=20, has=False):
+    """화면에 해당 텍스트가 나타날 때까지 dump 반복"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        nodes = dump()
+        node  = find(nodes,
+                     has=text_str if has else None,
+                     text=text_str if not has else None)
         if node:
-            return root
-        time.sleep(0.5)
+            return nodes
+        time.sleep(1)
     return None
 
 
-# ══════════════════════════════════════════════
-# 참가자 파싱 상수
-# ══════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# 참가자 / 스코어 파싱
+# ══════════════════════════════════════════════════════
 
 SCORE_RE = re.compile(r"^([+-]\d+|E|\+0|0)$")
 RANK_RE  = re.compile(r"^\d{1,2}$")
-SKIP     = {"스트로크","롱기","니어","다기록","신페리오","홀인원",
-            "라운드","참여","완료","랭킹기준","스트로크플레이",
-            "Par","Score","Hole","Putt","Sensor","T",""}
+SKIP     = {"스트로크", "롱기", "니어", "다기록", "신페리오", "홀인원",
+            "라운드", "참여", "완료", "랭킹기준", "스트로크플레이",
+            "Par", "Score", "Hole", "Putt", "Sensor", "T", ""}
 
-def extract_players(root, seen):
-    """dump root에서 신규 참가자 추출"""
+
+def extract_players(nodes, seen):
+    """dump 노드에서 신규 참가자 추출"""
     new_players = []
-    for node in root.iter("node"):
-        s = node.get("text","").strip()
-        if not (SCORE_RE.match(s) or s in ("+0","E","0")):
+    for n in (nodes or []):
+        s = n.get("text", "").strip()
+        if not (SCORE_RE.match(s) or s in ("+0", "E", "0")):
             continue
-        y = center(node)[1]
-        for txt in row_texts(root, y, tol=50):
+        y = center(n)[1]
+        for txt in row_texts(nodes, y, tol=50):
             if (txt not in SKIP
                     and not SCORE_RE.match(txt)
                     and not RANK_RE.match(txt)
@@ -326,7 +289,7 @@ def extract_players(root, seen):
                     and len(txt) >= 2):
                 val = 0
                 try:
-                    val = int(s.replace("+",""))
+                    val = int(s.replace("+", ""))
                 except ValueError:
                     pass
                 seen.add(txt)
@@ -335,40 +298,41 @@ def extract_players(root, seen):
     return new_players
 
 
-# ══════════════════════════════════════════════
-# 스코어카드 파싱
-# ══════════════════════════════════════════════
-
-def parse_scores(root):
+def parse_scores(nodes):
+    """스코어카드 화면에서 홀별 타수 추출"""
     scores = []
-    for node in root.iter("node"):
-        if node.get("text","").strip() != "Score":
+    for n in (nodes or []):
+        if n.get("text", "").strip() != "Score":
             continue
-        y = center(node)[1]
-        nums = [int(t) for t in row_texts(root, y, tol=30)
+        y    = center(n)[1]
+        nums = [int(t) for t in row_texts(nodes, y, tol=30)
                 if t != "Score" and re.match(r"^-?\d+$", t)]
-        if len(nums) == 9:   scores.extend(nums)
+        if len(nums) == 9:    scores.extend(nums)
         elif len(nums) == 10: scores.extend(nums[:9])
         if len(scores) >= 18: return scores[:18]
     return scores[:18] if scores else None
 
-def parse_par(root):
-    pars = []
-    for node in root.iter("node"):
-        if node.get("text","").strip() != "Par":
-            continue
-        y = center(node)[1]
-        nums = [int(t) for t in row_texts(root, y, tol=30)
-                if re.match(r"^[345]$", t.strip())]
-        if len(nums) == 9:   pars.extend(nums)
-        elif len(nums) == 10: pars.extend(nums[:9])
-        if len(pars) >= 18: return pars[:18]
-    return [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
 
-def parse_meta(root):
+def parse_par(nodes):
+    """파 데이터 추출"""
+    pars = []
+    for n in (nodes or []):
+        if n.get("text", "").strip() != "Par":
+            continue
+        y    = center(n)[1]
+        nums = [int(t) for t in row_texts(nodes, y, tol=30)
+                if re.match(r"^[345]$", t.strip())]
+        if len(nums) == 9:    pars.extend(nums)
+        elif len(nums) == 10: pars.extend(nums[:9])
+        if len(pars) >= 18:   return pars[:18]
+    return [4, 3, 4, 4, 5, 3, 4, 5, 4,  4, 5, 4, 3, 4, 4, 4, 3, 5]
+
+
+def parse_meta(nodes):
+    """코스명 / 날짜 / 참가자 수 추출"""
     course, date, n_total = "코스 미확인", "", 0
-    for node in root.iter("node"):
-        t = node.get("text","").strip()
+    for n in (nodes or []):
+        t = n.get("text", "").strip()
         if ("CC" in t or "GC" in t) and len(t) < 40:
             course = t
         m = re.search(r"(\d{4}\.\d{2}\.\d{2})", t)
@@ -379,46 +343,47 @@ def parse_meta(root):
             n_total = int(m2.group(1))
     return course, date, n_total
 
+
 def fallback_scores(total):
-    scores = [0]*18
+    """총점만 알 때 홀별 배분"""
+    scores = [0] * 18
     rem = total
-    i = 0
+    i   = 0
     while rem != 0 and i < 100:
         d = 1 if rem > 0 else -1
-        scores[i%18] += d
+        scores[i % 18] += d
         rem -= d
-        i += 1
+        i   += 1
     return scores
 
 
-# ══════════════════════════════════════════════
-# HTML / PDF 생성
-# ══════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# HTML / 스코어카드 생성
+# ══════════════════════════════════════════════════════
 
 def score_badge(s):
-    txt = str(s) if s != 0 else "0"
+    txt = f"+{s}" if s > 0 else str(s)
     if s <= -2: return f'<span class="badge eagle">{txt}</span>'
     if s == -1: return f'<span class="badge birdie">{txt}</span>'
-    if s ==  0: return f'<span class="badge par">{txt}</span>'
+    if s ==  0: return f'<span class="badge par">0</span>'
     if s ==  1: return f'<span class="badge bogey">{txt}</span>'
-    return f'<span class="badge double-bogey">{txt}</span>'
+    return             f'<span class="badge double-bogey">{txt}</span>'
+
 
 def scorecard_table(name, rank, par_list, scores, front=True):
     if front:
-        holes, pars, sc = list(range(1,10)), par_list[:9], scores[:9]
+        holes, pars, sc = list(range(1, 10)),  par_list[:9],  scores[:9]
     else:
-        holes, pars, sc = list(range(10,19)), par_list[9:], scores[9:]
+        holes, pars, sc = list(range(10, 19)), par_list[9:], scores[9:]
     par_t   = sum(pars)
     score_t = sum(sc)
     total   = sum(scores)
-
     hole_td  = "".join(f"<td>{h}</td>" for h in holes)
     par_td   = "".join(f"<td>{p}</td>" for p in pars)
     score_td = "".join(f"<td>{score_badge(s)}</td>" for s in sc)
     s_str    = f"+{score_t}" if score_t > 0 else str(score_t)
     t_str    = f"+{total}"  if total   > 0 else str(total)
-    medal    = {1:"🥇",2:"🥈",3:"🥉"}.get(rank, str(rank))
-
+    medal    = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, str(rank))
     return f"""
 <div class="player-section">
   <div class="player-header">
@@ -432,6 +397,7 @@ def scorecard_table(name, rank, par_list, scores, front=True):
     <tr class="score-row"><td class="label">Score</td>{score_td}<td class="score-t">{s_str}</td></tr>
   </table>
 </div>"""
+
 
 CSS = """
 * { box-sizing:border-box; margin:0; padding:0; }
@@ -468,17 +434,18 @@ footer { text-align:center; padding:12px; font-size:.72rem;
          color:#aaa; background:#fff; border-radius:0 0 12px 12px; }
 """
 
+
 def build_html(game_data):
     players  = game_data["players"]
     par_list = game_data["par_list"]
-    course   = game_data.get("course","")
-    date     = game_data.get("date","")
+    course   = game_data.get("course", "")
+    date     = game_data.get("date", "")
     n_total  = game_data.get("total_players", len(players))
     now      = datetime.now().strftime("%Y.%m.%d %H:%M")
 
     cards = ""
     for p in players:
-        sc = p.get("scores", [0]*18)
+        sc     = p.get("scores", [0] * 18)
         cards += scorecard_table(p["name"], p["rank"], par_list, sc, front=True)
         cards += scorecard_table(p["name"], p["rank"], par_list, sc, front=False)
         cards += '<hr class="player-divider">'
@@ -502,9 +469,9 @@ def build_html(game_data):
 </body>
 </html>"""
 
+
 def save_output(game_data):
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    tag       = game_data["date"].replace(".","")
+    tag       = game_data["date"].replace(".", "")
     html_path = OUTPUT_DIR / f"scorecard_{tag}.html"
     pdf_path  = OUTPUT_DIR / f"scorecard_{tag}.pdf"
 
@@ -513,8 +480,8 @@ def save_output(game_data):
     print(f"  [✓] HTML: {html_path}")
 
     for cmd in [
-        f"weasyprint \"{html_path}\" \"{pdf_path}\"",
-        f"wkhtmltopdf \"{html_path}\" \"{pdf_path}\"",
+        f'weasyprint "{html_path}" "{pdf_path}"',
+        f'wkhtmltopdf "{html_path}" "{pdf_path}"',
     ]:
         try:
             r = subprocess.run(cmd, shell=True, capture_output=True, timeout=120)
@@ -525,66 +492,62 @@ def save_output(game_data):
             continue
 
     print(f"  [!] PDF 변환기 없음 → HTML만 저장")
-    print(f"      termux-open \"{html_path}\"  →  공유 → 인쇄 → PDF")
+    print(f"      브라우저에서 열기: termux-open \"{html_path}\"")
+    print(f"      → 공유 → 인쇄 → PDF로 저장")
     return str(html_path)
 
 
-# ══════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 # 메인 흐름
-# ══════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
 
 def main():
-    print("\n" + "═"*50)
+    print("\n" + "═" * 52)
     print("  골프존 네트워크플레이 스코어 자동 수집")
-    print("═"*50 + "\n")
+    print("  (Python + Auto.js 하이브리드)")
+    print("═" * 52 + "\n")
 
-    # 날짜 설정 (기본값: 2026.03.29)
-    # ── 0. ADB 자동 연결 ────────────────────────
-    adb_auto_connect()
+    # ── 0. Auto.js 연결 대기 ────────────────────────────
+    if not wait_for_autojs(timeout=120):
+        sys.exit("[오류] Auto.js 서비스가 응답하지 않습니다.\n"
+                 "  → Auto.js 앱에서 golfzon_autojs.js 를 실행하세요.")
 
-    default_date = "2026.03.29"
-    user_date = input(f"경기 날짜 입력 [{default_date}]: ").strip()
-    target_date = user_date if user_date else default_date
+    # ── 날짜 입력 ───────────────────────────────────────
+    today        = datetime.now().strftime("%Y.%m.%d")
+    user_date    = input(f"경기 날짜 입력 [{today}]: ").strip()
+    target_date  = user_date if user_date else today
     print(f"  대상 날짜: {target_date}\n")
 
-    # ── 1. 앱 실행 및 폴더 초기화 ──────────────
+    # ── 1. 앱 실행 ──────────────────────────────────────
     print("[1/6] 골프존 앱 실행...")
-    SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    adb(f"rm -f {SCORES_DIR}/*.xml")
-    adb(f"am start -n {GOLFZON_PKG}/{GOLFZON_ACT}")
-    time.sleep(4)
+    launch_app()
 
-    # ── 1-b. 공지사항/광고 팝업 닫기 ───────────
+    # ── 1-b. 공지 팝업 닫기 ─────────────────────────────
     close_popup()
 
-    # ── 2. 전체메뉴 클릭 ────────────────────────
+    # ── 2. 전체메뉴 ─────────────────────────────────────
     print("[2/6] 전체메뉴 → 네트워크플레이 이동...")
     for attempt in range(5):
-        root = dump()
-        if tap_text(root, text="전체메뉴", wait=2.0):
+        if tap_text("전체메뉴", wait=2.0):
             break
         time.sleep(1)
     else:
         sys.exit("[오류] '전체메뉴'를 찾지 못했습니다.")
 
-    # ── 3. 네트워크플레이 클릭 ──────────────────
+    # ── 3. 네트워크플레이 ───────────────────────────────
     for attempt in range(5):
-        root = dump()
-        if tap_text(root, text="네트워크플레이", wait=2.0):
+        if tap_text("네트워크플레이", wait=2.0):
             break
         time.sleep(1)
     else:
         sys.exit("[오류] '네트워크플레이'를 찾지 못했습니다.")
 
-    # ── 4. 날짜 경기 선택 ───────────────────────
+    # ── 4. 날짜 경기 선택 ───────────────────────────────
     print(f"[3/6] {target_date} 경기 탐색...")
     found_game = False
     for _ in range(10):
-        root = dump()
-        if root is None:
-            time.sleep(1)
-            continue
-        node = find(root, has=target_date)
+        nodes = dump()
+        node  = find(nodes, has=target_date)
         if node:
             tap_node(node, wait=3.0)
             found_game = True
@@ -594,36 +557,36 @@ def main():
     if not found_game:
         sys.exit(f"[오류] '{target_date}' 날짜 경기를 찾지 못했습니다.")
 
-    # ── 5. 라운드 완료 확인 ─────────────────────
-    print("[4/6] 라운드 완료 여부 확인...")
-    n_total  = 0
+    # ── 5. 메타 정보 / 라운드 완료 확인 ────────────────
+    print("[4/6] 라운드 정보 확인...")
     course   = "코스 미확인"
     date     = target_date
-    par_list = [4,3,4,4,5,3,4,5,4, 4,5,4,3,4,4,4,3,5]
+    n_total  = 0
+    par_list = [4, 3, 4, 4, 5, 3, 4, 5, 4,  4, 5, 4, 3, 4, 4, 4, 3, 5]
 
     try:
-        r0 = dump(str(SCORES_DIR / "ranking_0.xml"))
-        course, meta_date, n_total = parse_meta(r0)
-        par_list = parse_par(r0)
+        nodes = dump()
+        course, meta_date, n_total = parse_meta(nodes)
+        par_list = parse_par(nodes)
         if meta_date:
             date = meta_date
 
-        for node in r0.iter("node"):
-            t = node.get("text","")
-            m = re.search(r"라운드 완료\s*(\d+)명.*참여\s*(\d+)명", t)
+        for n in (nodes or []):
+            t  = n.get("text", "")
+            m  = re.search(r"라운드 완료\s*(\d+)명.*참여\s*(\d+)명", t)
             if m:
                 done, total = int(m.group(1)), int(m.group(2))
                 n_total = total
                 print(f"  라운드 완료 {done}명 / 참여 {total}명")
                 if done < total:
                     ans = input(f"  아직 {total-done}명 라운드 중. 계속하시겠습니까? (y/N): ").strip().lower()
-                    if ans != 'y':
+                    if ans != "y":
                         sys.exit("중단.")
                 break
     except Exception as e:
         print(f"  확인 실패: {e} - 계속 진행")
 
-    # ── 6. 참가자 목록 수집 ─────────────────────
+    # ── 6. 참가자 목록 수집 ─────────────────────────────
     print("[5/6] 참가자 목록 수집 중...")
     swipe_to_top()
     time.sleep(1)
@@ -633,11 +596,11 @@ def main():
     no_new  = 0
 
     for i in range(20):
-        root = dump(str(SCORES_DIR / f"ranking_{i}.xml"))
-        if root is None:
+        nodes = dump()
+        if nodes is None:
             continue
 
-        new_p = extract_players(root, seen)
+        new_p = extract_players(nodes, seen)
         if new_p:
             players.extend(new_p)
             no_new = 0
@@ -657,7 +620,7 @@ def main():
         p["rank"] = i + 1
     print(f"  → 총 {len(players)}명 수집 완료")
 
-    # ── 7. 스코어카드 수집 ──────────────────────
+    # ── 7. 스코어카드 수집 ──────────────────────────────
     print("[6/6] 스코어카드 수집 중...")
     swipe_to_top()
     time.sleep(1)
@@ -668,8 +631,8 @@ def main():
 
         found = False
         for _ in range(10):
-            root = dump()
-            node = find(root, text=name)
+            nodes = dump()
+            node  = find(nodes, text=name)
             if node:
                 tap_node(node, wait=2.0)
                 found = True
@@ -681,15 +644,14 @@ def main():
             p["scores"] = fallback_scores(p["total_relative"])
             continue
 
-        # 스코어카드 dump
         try:
-            sc_root = dump(str(SCORES_DIR / f"score_{name}.xml"))
-            scores   = parse_scores(sc_root)
+            sc_nodes = dump()
+            scores   = parse_scores(sc_nodes)
             if scores and len(scores) == 18:
-                p["scores"]   = scores
-                p_list        = parse_par(sc_root)
+                p["scores"] = scores
+                p_list      = parse_par(sc_nodes)
                 if len(p_list) == 18:
-                    par_list  = p_list
+                    par_list = p_list
                 print(f"    ✓ {scores}")
             else:
                 p["scores"] = fallback_scores(p["total_relative"])
@@ -699,22 +661,26 @@ def main():
 
         back()
 
-    # ── 8. 스코어카드 생성 ──────────────────────
+    # ── 8. HTML/PDF 생성 ────────────────────────────────
     print("\n스코어카드 생성 중...")
-
     game_data = {
-        "date":             date,
-        "course":           course,
-        "total_players":    n_total or len(players),
-        "par_list":         par_list,
-        "players":          players,
+        "date":          date,
+        "course":        course,
+        "total_players": n_total or len(players),
+        "par_list":      par_list,
+        "players":       players,
     }
-
     out = save_output(game_data)
 
-    print(f"\n{'═'*50}")
+    # Auto.js 종료
+    try:
+        send("quit", timeout=5)
+    except Exception:
+        pass
+
+    print(f"\n{'═'*52}")
     print(f"  완료! → {out}")
-    print(f"{'═'*50}\n")
+    print(f"{'═'*52}\n")
 
 
 if __name__ == "__main__":
