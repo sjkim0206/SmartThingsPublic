@@ -13,6 +13,8 @@ Python (Termux) + Auto.js 하이브리드 방식
   /sdcard/golfzon/done.json   Auto.js → Python 완료 신호
   /sdcard/golfzon/dump.json   Auto.js → Python 화면 노드 JSON
 
+
+
 사전 준비:
   1. AutoJs6 설치 → 설정 → 접근성 → AutoJs6 활성화
   2. Auto.js에서 golfzon_autojs.js 실행 (서비스 대기 유지)
