@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>골프존 네트워크 플레이 스코어카드 - ㅂㅂ11</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+      background: #f0f2f5;
+      padding: 20px;
+      color: #222;
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+      overflow: hidden;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .header {
+      background: linear-gradient(135deg, #1a4fd6 0%, #0a2fa0 100%);
+      color: white;
+      padding: 24px 28px;
+    }
+    .header h1 { font-size: 1.8rem; margin-bottom: 6px; }
+    .header .meta { font-size: 0.95rem; opacity: 0.85; }
+    .header .stats {
+      margin-top: 12px;
+      font-size: 0.9rem;
+      opacity: 0.9;
+    }
+
+    .legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 14px 20px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 0.82rem;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 4px;
+    }
+    .legend-item::before { content: "■"; font-size: 10px; }
+    .legend-item.double-circle { background: #FFD700; color: black; }
+    .legend-item.circle        { background: #FF4500; color: white; }
+    .legend-item.par-cell      { background: #eee; color: #333; }
+    .legend-item.square        { background: #3A7FD5; color: white; }
+    .legend-item.double-square { background: #1A1A6E; color: white; }
+
+    .table-wrap { overflow-x: auto; padding: 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    /* 섹션 헤더 */
+    .section-header th {
+      background: #2c3e50;
+      color: white;
+      text-align: center;
+      padding: 8px 6px;
+      font-weight: 600;
+      font-size: 0.8rem;
+    }
+
+    /* 파 행 */
+    .par-row td {
+      background: #4a5568;
+      color: #cfd8dc;
+      text-align: center;
+      padding: 6px 4px;
+      font-size: 0.78rem;
+    }
+    .par-cell { font-weight: bold; }
+
+    /* 플레이어 행 */
+    .rank-cell {
+      text-align: center;
+      font-size: 1.1rem;
+      white-space: nowrap;
+      padding: 6px 8px;
+      vertical-align: middle;
+      border-left: 3px solid #e0e0e0;
+    }
+    .name-cell {
+      font-weight: 600;
+      white-space: nowrap;
+      padding: 6px 12px;
+      vertical-align: middle;
+      min-width: 100px;
+    }
+    .half-label {
+      text-align: center;
+      font-size: 0.75rem;
+      color: #666;
+      padding: 4px 6px;
+      white-space: nowrap;
+    }
+    .score-cell {
+      text-align: center;
+      padding: 4px 3px;
+      min-width: 36px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      vertical-align: middle;
+    }
+    .score-cell .rel-label {
+      font-size: 0.68rem;
+      font-weight: 400;
+      opacity: 0.85;
+    }
+    .subtotal-cell, .total-cell {
+      text-align: center;
+      padding: 6px 8px;
+      font-size: 0.88rem;
+      min-width: 44px;
+      vertical-align: middle;
+    }
+    .total-cell { background: #f0f4ff; font-size: 1rem; }
+
+    /* 점수 모양 */
+    .circle  { border-radius: 50%; }
+    .double-circle { border-radius: 50%; outline: 2px solid currentColor; }
+    .square  { border-radius: 2px; }
+    .double-square { border-radius: 2px; outline: 2px solid currentColor; }
+
+    /* 행 구분 */
+    tr.player-front td { border-top: 1px solid #e0e0e0; }
+    tr.player-back  td { border-bottom: 2px solid #c8c8c8; }
+
+    /* 섹션 구분자 */
+    .divider th {
+      background: #eceff1;
+      padding: 4px;
+      text-align: center;
+      font-size: 0.78rem;
+      color: #888;
+      font-weight: 600;
+      border-top: 2px solid #cfd8dc;
+    }
+
+    /* 파 합계 행 */
+    .par-total-row td {
+      background: #37474f;
+      color: white;
+      text-align: center;
+      font-weight: bold;
+      padding: 6px 4px;
+    }
+
+    footer {
+      text-align: center;
+      padding: 14px;
+      font-size: 0.78rem;
+      color: #aaa;
+      background: #f8f9fa;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <h1>ㅂㅂ11</h1>
+      <div class="meta">백제 CC - 웅진/사비 &nbsp;|&nbsp; 2026.03.29</div>
+      <div class="stats">
+        라운드 완료 16명 / 참여 16명 &nbsp;|&nbsp;
+        Par 72 (전반 36 / 후반 36)
+      </div>
+    </div>
+
+    <div class="legend"><span class="legend-item double-circle">이글 이상</span><span class="legend-item circle">버디</span><span class="legend-item par-cell">파</span><span class="legend-item square">보기</span><span class="legend-item double-square">더블보기 이상</span></div>
+
+    <div class="table-wrap">
+      <table>
+        <!-- ── 전반 9홀 ── -->
+        <thead>
+          <tr class="section-header">
+            <th colspan="2">순위 / 선수</th>
+            <th>구분</th>
+            <th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th><th>8</th><th>9</th>
+            <th>소계</th>
+            <th>합계</th>
+          </tr>
+          <tr class="par-row">
+            <td colspan="2">Par</td>
+            <td></td>
+            <td class='par-cell'>4</td><td class='par-cell'>3</td><td class='par-cell'>4</td><td class='par-cell'>4</td><td class='par-cell'>5</td><td class='par-cell'>3</td><td class='par-cell'>4</td><td class='par-cell'>5</td><td class='par-cell'>4</td>
+            <td class="par-cell">36</td>
+            <td class="par-cell">72</td>
+          </tr>
+        </thead>
+        <tbody>
+          
+        <tr class="player-front">
+          <td class="rank-cell" rowspan="2">🥇</td>
+          <td class="name-cell" rowspan="2">[늘푸른]</td>
+          <td class="half-label">전반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td>
+          <td class="subtotal-cell">-3</td>
+          <td class="total-cell" rowspan="2"><strong>-7</strong></td>
+        </tr>
+        <tr class="player-back">
+          <td class="half-label">후반</td>
+          <td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell bogey square" style="background:#3A7FD5;color:white;">4<br><span class='rel-label'>+1</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td>
+          <td class="subtotal-cell">-4</td>
+        </tr>
+        <tr class="player-front">
+          <td class="rank-cell" rowspan="2">🥈</td>
+          <td class="name-cell" rowspan="2">bonteng</td>
+          <td class="half-label">전반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td>
+          <td class="subtotal-cell">-3</td>
+          <td class="total-cell" rowspan="2"><strong>-4</strong></td>
+        </tr>
+        <tr class="player-back">
+          <td class="half-label">후반</td>
+          <td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td>
+          <td class="subtotal-cell">-2</td>
+        </tr>
+        <tr class="player-front">
+          <td class="rank-cell" rowspan="2">🥉</td>
+          <td class="name-cell" rowspan="2">써클에너지</td>
+          <td class="half-label">전반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">2<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td>
+          <td class="subtotal-cell">-3</td>
+          <td class="total-cell" rowspan="2"><strong>-3</strong></td>
+        </tr>
+        <tr class="player-back">
+          <td class="half-label">후반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td>
+          <td class="subtotal-cell">-1</td>
+        </tr>
+        <tr class="player-front">
+          <td class="rank-cell" rowspan="2">4</td>
+          <td class="name-cell" rowspan="2">마차이새쯔</td>
+          <td class="half-label">전반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell bogey square" style="background:#3A7FD5;color:white;">4<br><span class='rel-label'>+1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td>
+          <td class="subtotal-cell">0</td>
+          <td class="total-cell" rowspan="2"><strong>0</strong></td>
+        </tr>
+        <tr class="player-back">
+          <td class="half-label">후반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell bogey square" style="background:#3A7FD5;color:white;">5<br><span class='rel-label'>+1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">2<br><span class='rel-label'>-1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td>
+          <td class="subtotal-cell">0</td>
+        </tr>
+        <tr class="player-front">
+          <td class="rank-cell" rowspan="2">5</td>
+          <td class="name-cell" rowspan="2">나 (사용자)</td>
+          <td class="half-label">전반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell bogey square" style="background:#3A7FD5;color:white;">4<br><span class='rel-label'>+1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell bogey square" style="background:#3A7FD5;color:white;">5<br><span class='rel-label'>+1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">3<br><span class='rel-label'>-1</span></td>
+          <td class="subtotal-cell">+1</td>
+          <td class="total-cell" rowspan="2"><strong>+1</strong></td>
+        </tr>
+        <tr class="player-back">
+          <td class="half-label">후반</td>
+          <td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">5<br><span class='rel-label'>0</span></td><td class="score-cell bogey square" style="background:#3A7FD5;color:white;">5<br><span class='rel-label'>+1</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">4<br><span class='rel-label'>0</span></td><td class="score-cell par " style="background:transparent;color:inherit;">3<br><span class='rel-label'>0</span></td><td class="score-cell birdie circle" style="background:#FF4500;color:white;">4<br><span class='rel-label'>-1</span></td>
+          <td class="subtotal-cell">0</td>
+        </tr>
+        </tbody>
+
+        <!-- ── 후반 9홀 헤더 ── -->
+        <thead>
+          <tr class="divider">
+            <th colspan="13">▼ 후반 9홀 (Hole 10–18)</th>
+          </tr>
+          <tr class="section-header">
+            <th colspan="2">순위 / 선수</th>
+            <th>구분</th>
+            <th>10</th><th>11</th><th>12</th><th>13</th><th>14</th><th>15</th><th>16</th><th>17</th><th>18</th>
+            <th>소계</th>
+            <th>합계</th>
+          </tr>
+          <tr class="par-row">
+            <td colspan="2">Par</td>
+            <td></td>
+            <td class='par-cell'>4</td><td class='par-cell'>5</td><td class='par-cell'>4</td><td class='par-cell'>3</td><td class='par-cell'>4</td><td class='par-cell'>4</td><td class='par-cell'>4</td><td class='par-cell'>3</td><td class='par-cell'>5</td>
+            <td class="par-cell">36</td>
+            <td class="par-cell">72</td>
+          </tr>
+        </thead>
+      </table>
+    </div>
+
+    <footer>골프존 네트워크 플레이 스코어카드 &nbsp;|&nbsp; 생성일: 2026.03.29</footer>
+  </div>
+</body>
+</html>

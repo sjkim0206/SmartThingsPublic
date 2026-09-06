@@ -1,0 +1,4 @@
+{
+  "name": "개인 스크립트 저장소",
+  "install": "pip3 install --user --upgrade -r manwha-fetch/requirements.txt"
+}
